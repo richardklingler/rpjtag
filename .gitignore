@@ -1,5 +1,7 @@
 # CMake and Pico SDK build output
+settings.json
 /build/
+/fw/build/
 /cmake-build-*/
 /CMakeFiles/
 /CMakeCache.txt

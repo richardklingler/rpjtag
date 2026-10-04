@@ -97,7 +97,7 @@ Keep the JTAG pins consecutive (TCK, TMS, TDI, TDO) so PIO pin mapping stays sim
 | 2+3 | CDC-ACM | Target UART bridge (optional, milestone M6) |
 
 - Include MS OS 2.0 descriptors (WinUSB) so Windows binds both vendor interfaces without a driver.
-- VID/PID: use a pid.codes or Raspberry Pi community PID for development, and register a proper one before release.
+- VID/PID: use the registered pid.codes values `VID 0x1209`, `PID 0x5306` for this adapter.
 - The interface string must contain "CMSIS-DAP"; that is how OpenOCD and others detect a CMSIS-DAP v2 interface.
 
 ### 3.3 JTAG engine (PIO)
