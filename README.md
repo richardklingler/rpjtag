@@ -62,7 +62,7 @@ For openFPGALoader, use a CMSIS-DAP v2-enabled build and pass the registered IDs
 openFPGALoader -c cmsisdap --vid 0x1209 --pid 0x5306 --freq 1000000 --detect
 ```
 
-The Homebrew 1.1.1 bottle on the test host has CMSIS-DAP disabled. A local v2-enabled build detects the FPGA at 1 MHz; it reports JTAG unsupported at 6 MHz and fails DAP connect at 15 MHz. OpenOCD successfully scans through 15 MHz.
+The Homebrew 1.1.1 bottle on the test host has CMSIS-DAP disabled. A local CMSIS-DAP-v2-enabled build loaded the supplied XC7S15 bitstream into SRAM at 1, 6, and 15 MHz.
 
 ## Hardware target
 

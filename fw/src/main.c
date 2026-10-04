@@ -110,15 +110,17 @@ static void poll_usb_commands(void) {
     }
 }
 
-static void poll_cmsis_dap(void) {
+static bool poll_cmsis_dap(void) {
     static uint8_t request[DAP_PACKET_SIZE];
     static uint8_t response[DAP_PACKET_SIZE];
+    bool processed_request = false;
 
     while (tud_vendor_available() != 0) {
         const uint32_t request_length = tud_vendor_read(request, sizeof(request));
         if (request_length == 0) {
             break;
         }
+        processed_request = true;
 
         const uint32_t response_length = DAP_ExecuteCommand(request, response) & 0xffffu;
         uint32_t written = 0;
@@ -132,6 +134,8 @@ static void poll_cmsis_dap(void) {
         }
         tud_vendor_write_flush();
     }
+
+    return processed_request;
 }
 
 int main(void) {
@@ -147,8 +151,15 @@ int main(void) {
     uint32_t blink_counter = 0;
     while (true) {
         tud_task();
-        poll_cmsis_dap();
+        if (poll_cmsis_dap()) {
+            continue;
+        }
         poll_usb_commands();
+
+        if (tud_vendor_mounted()) {
+            sleep_ms(1);
+            continue;
+        }
 
         const bool button_pressed = !gpio_get(BUTTON_PIN);
         const float vtref_mv = read_vtref_mv();
