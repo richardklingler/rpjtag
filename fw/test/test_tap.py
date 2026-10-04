@@ -23,7 +23,7 @@ TAP_STATES = [
 ]
 
 TAP_GRAPH = {
-    "TEST_LOGIC_RESET": {"0": "TEST_LOGIC_RESET", "1": "RUN_TEST_IDLE"},
+    "TEST_LOGIC_RESET": {"0": "RUN_TEST_IDLE", "1": "TEST_LOGIC_RESET"},
     "RUN_TEST_IDLE": {"0": "RUN_TEST_IDLE", "1": "SELECT_DR_SCAN"},
     "SELECT_DR_SCAN": {"0": "CAPTURE_DR", "1": "SELECT_IR_SCAN"},
     "CAPTURE_DR": {"0": "SHIFT_DR", "1": "EXIT1_DR"},
@@ -64,7 +64,7 @@ def shortest_tms_path(start: str, end: str) -> list[int]:
 
 
 def test_reset_path() -> None:
-    assert shortest_tms_path("TEST_LOGIC_RESET", "RUN_TEST_IDLE") == [1]
+    assert shortest_tms_path("TEST_LOGIC_RESET", "RUN_TEST_IDLE") == [0]
 
 
 def test_shift_path() -> None:

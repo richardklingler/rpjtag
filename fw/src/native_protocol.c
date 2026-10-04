@@ -83,7 +83,7 @@ typedef struct {
 } native_chain_device_t;
 
 static const uint8_t tap_next_state[16][2] = {
-    {TAP_TEST_LOGIC_RESET, TAP_RUN_TEST_IDLE},
+    {TAP_RUN_TEST_IDLE, TAP_TEST_LOGIC_RESET},
     {TAP_RUN_TEST_IDLE, TAP_SELECT_DR_SCAN},
     {TAP_CAPTURE_DR, TAP_SELECT_IR_SCAN},
     {TAP_SHIFT_DR, TAP_EXIT1_DR},
@@ -125,6 +125,9 @@ static uint8_t fragment_seq;
 static bool fragment_active;
 
 static uint8_t response_payload[NATIVE_RESPONSE_CAPACITY];
+static uint32_t native_received_bytes;
+static uint32_t native_frame_count;
+static uint32_t native_response_count;
 
 static uint16_t read_u16(const uint8_t *data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -711,6 +714,7 @@ static void send_response(uint8_t cmd, uint8_t seq, const uint8_t *payload,
     write_response_bytes(header, sizeof(header));
     write_response_bytes(payload, length);
     tud_vendor_n_write_flush(NATIVE_INTERFACE);
+    ++native_response_count;
 }
 
 static void handle_message(uint8_t cmd, uint8_t seq, uint16_t flags,
@@ -724,6 +728,7 @@ static void handle_message(uint8_t cmd, uint8_t seq, uint16_t flags,
 }
 
 static void process_frame(void) {
+    ++native_frame_count;
     if ((frame_flags & ~(NATIVE_FLAG_MORE | NATIVE_FLAG_NO_RESPONSE)) != 0) {
         response_payload[0] = NATIVE_STATUS_BAD_LEN;
         if ((frame_flags & NATIVE_FLAG_NO_RESPONSE) == 0) {
@@ -831,6 +836,9 @@ void native_protocol_init(void) {
     frame_discard_remaining = 0;
     fragment_payload_used = 0;
     fragment_active = false;
+    native_received_bytes = 0;
+    native_frame_count = 0;
+    native_response_count = 0;
     native_tap_state = TAP_TEST_LOGIC_RESET;
     native_chain_count = 1;
     native_active_device = 0;
@@ -847,8 +855,22 @@ void native_protocol_task(void) {
         if (received == 0) {
             break;
         }
+        native_received_bytes += received;
         for (uint32_t index = 0; index < received; ++index) {
             feed_byte(input[index]);
         }
+    }
+}
+
+void native_protocol_get_stats(uint32_t *received_bytes, uint32_t *frames,
+                               uint32_t *responses) {
+    if (received_bytes != NULL) {
+        *received_bytes = native_received_bytes;
+    }
+    if (frames != NULL) {
+        *frames = native_frame_count;
+    }
+    if (responses != NULL) {
+        *responses = native_response_count;
     }
 }

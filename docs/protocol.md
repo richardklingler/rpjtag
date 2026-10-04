@@ -62,4 +62,4 @@ USB interface 0 is a 64-byte bulk CMSIS-DAP v2 interface with the string `CMSIS-
 
 ## CDC bring-up commands
 
-The firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, and `IDCODE` commands over USB CDC. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, or `RPJTAG_IDCODE` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.
+The firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, `IDCODE`, and `NATIVE` commands over USB CDC. `NATIVE` reports received byte, parsed frame, and queued response counters for native-interface diagnosis. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, `RPJTAG_IDCODE`, or `RPJTAG_NATIVE` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.

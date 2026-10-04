@@ -59,15 +59,17 @@ class NativeProtocolClient:
         self.transport = transport
         self.timeout_ms = timeout_ms
         self._sequence = 0
+        self._read_buffer = bytearray()
 
     def _read_exact(self, length: int) -> bytes:
-        result = bytearray()
-        while len(result) < length:
-            chunk = self.transport.read(min(64, length - len(result)), self.timeout_ms)
+        while len(self._read_buffer) < length:
+            chunk = self.transport.read(64, self.timeout_ms)
             if not chunk:
                 raise TimeoutError("timed out reading native USB response")
-            result.extend(chunk)
-        return bytes(result)
+            self._read_buffer.extend(chunk)
+        result = bytes(self._read_buffer[:length])
+        del self._read_buffer[:length]
+        return result
 
     def request(self, cmd: int, payload: bytes = b"") -> bytes:
         sequence = self._sequence

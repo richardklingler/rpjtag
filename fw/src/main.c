@@ -73,6 +73,16 @@ static void handle_usb_command(const char *command) {
     } else if (strcmp(command, "IDCODE") == 0) {
         const uint32_t idcode = dap_jtag_scan_idcode();
         printf("RPJTAG_IDCODE idcode=0x%08lx\n", (unsigned long)idcode);
+    } else if (strcmp(command, "NATIVE") == 0) {
+        uint32_t received_bytes;
+        uint32_t frames;
+        uint32_t responses;
+        native_protocol_get_stats(&received_bytes, &frames, &responses);
+        printf("RPJTAG_NATIVE rx_bytes=%lu frames=%lu responses=%lu mounted=%u\n",
+               (unsigned long)received_bytes,
+               (unsigned long)frames,
+               (unsigned long)responses,
+               tud_vendor_n_mounted(1) ? 1u : 0u);
     } else if (strncmp(command, "TCK ", 4) == 0) {
         char *end = NULL;
         const unsigned long requested_hz = strtoul(command + 4, &end, 10);
