@@ -38,7 +38,31 @@ python3 tools/rpjtag.py idcode --port /dev/cu.usbmodemXXXX
 ```
 
 Replace `/dev/cu.usbmodemXXXX` with the serial device name shown on the host.
-The IDCODE scan uses PIO and DMA. Set TCK to 1, 6, or 15 MHz with `--hz` before scanning to check the requested rates.
+The IDCODE scan uses PIO and DMA. The attached Spartan-7 returned `0x03620093` at requested TCK settings of 1, 6, and 15 MHz.
+
+## CMSIS-DAP v2
+
+The firmware exposes a CMSIS-DAP v2 bulk interface as USB interface 0 and keeps the CDC diagnostics as a separate interface. SWD is not enabled; JTAG operations use the PIO/DMA engine. The CMSIS-DAP default clock is 1 MHz for reliable first contact; OpenOCD can request faster clocks with `adapter speed`.
+
+After flashing the UF2, scan the connected Spartan-7 with OpenOCD:
+
+```bash
+openocd -f interface/cmsis-dap.cfg \
+	-c "transport select jtag" \
+	-c "adapter speed 1000" \
+	-c "jtag newtap fpga tap -irlen 6" \
+	-c "init; scan_chain; shutdown"
+```
+
+OpenOCD 0.12.0 successfully connected through this interface and scanned the chain, finding the Spartan-7 IDCODE `0x03620093`. A CMSIS-DAP-v2-enabled openFPGALoader build also detects the XC7S15 at 1 MHz.
+
+For openFPGALoader, use a CMSIS-DAP v2-enabled build and pass the registered IDs explicitly:
+
+```bash
+openFPGALoader -c cmsisdap --vid 0x1209 --pid 0x5306 --freq 1000000 --detect
+```
+
+The Homebrew 1.1.1 bottle on the test host has CMSIS-DAP disabled. A local v2-enabled build identified the FPGA at 1 MHz; higher requested rates need further investigation.
 
 ## Hardware target
 
@@ -48,4 +72,4 @@ The IDCODE scan uses PIO and DMA. Set TCK to 1, 6, or 15 MHz with `--hz` before 
 - Flash: built-in QSPI flash
 - USB VID/PID: `0x1209` / `0x5306` (pid.codes registration)
 
-The current scaffold covers the milestone M0 bring-up path: board init, LED/button checks, and ADC measurement of the target reference voltage (`VTref`). See [docs/pico2w-wiring.md](docs/pico2w-wiring.md) for the provisional Pico 2 W header map. It is separate from the eventual custom-adapter pin assignment in the firmware specification.
+The current scaffold covers M0 bring-up and the M1 JTAG engine, with the M2 CMSIS-DAP v2 interface now integrated. See [docs/pico2w-wiring.md](docs/pico2w-wiring.md) for the provisional Pico 2 W header map. It is separate from the eventual custom-adapter pin assignment in the firmware specification.

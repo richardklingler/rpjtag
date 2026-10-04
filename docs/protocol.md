@@ -36,6 +36,10 @@ Responses echo the same command and sequence number and prefix the payload with 
 
 The protocol is designed for pipelining and response matching by `seq`.
 
-## M0 CDC bring-up commands
+## CMSIS-DAP v2
 
-Until the native vendor-class interface is implemented, the firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, and `IDCODE` commands over USB CDC. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, or `RPJTAG_IDCODE` and contain space-separated `key=value` fields. IDCODE shifting uses PIO and DMA; TCK is set by the PIO clock divider. This diagnostic line protocol is temporary and is not the binary native protocol described above.
+USB interface 0 is a 64-byte bulk CMSIS-DAP v2 interface with the string `CMSIS-DAP v2`. The ARM CMSIS-DAP command processor is configured for JTAG; SWD is disabled. The default TCK is 1 MHz. JTAG sequences, clock selection, and IDCODE scans are routed to the Pico PIO/DMA engine. A Microsoft OS 2.0 descriptor advertises WinUSB for interface 0. USB CDC remains on a separate interface for diagnostics. OpenOCD 0.12.0 has been verified to discover the interface and scan the attached Spartan-7.
+
+## CDC bring-up commands
+
+The firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, and `IDCODE` commands over USB CDC. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, or `RPJTAG_IDCODE` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.

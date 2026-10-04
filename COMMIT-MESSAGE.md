@@ -1,18 +1,27 @@
 # Commit Message
 
-Move JTAG IDCODE shifting to PIO and DMA
+Add CMSIS-DAP v2 JTAG interface
 
-- Add a PIO JTAG clock/data loop with DMA-fed TMS/TDI and DMA-captured TDO for the 32-bit IDCODE scan.
-- Add a configurable TCK divider and expose `tck --hz` through the USB CDC host CLI.
-- Document the PIO/DMA path, supported development-board wiring, and TCK test commands.
+- Add a CMSIS-DAP v2 vendor bulk interface alongside the CDC diagnostic interface.
+- Integrate ARM's CMSIS-DAP command processor with JTAG-only configuration and PIO/DMA JTAG hooks.
+- Use the low 16-bit response length returned by `DAP_ExecuteCommand` when sending USB replies.
+- Default CMSIS-DAP TCK to 1 MHz for reliable first contact; clients can request faster rates.
+- Add Microsoft OS 2.0 WinUSB descriptors, OpenOCD chain-scan instructions, and attribution for the pinned CMSIS-DAP source.
 
 ## Verification
 
-- Pico 2 W firmware builds successfully with the configured Pico SDK and ARM toolchain.
+- Pico 2 W firmware builds successfully with the configured Pico SDK, ARM toolchain, and pinned CMSIS-DAP source.
 - `python3 fw/test/test_host_protocol.py` passes (5 tests).
 - `python3 fw/test/test_tap.py` passes.
-- No diagnostics reported for `fw/src/main.c`.
-- PIO/DMA scans on the connected Spartan board returned IDCODE `0x03620093` at requested TCK settings of 1, 6, and 15 MHz.
+- OpenOCD 0.12.0 at 1 MHz found the CMSIS-DAP v2 interface and scanned the chain, reading Spartan-7 IDCODE `0x03620093`.
+- A CMSIS-DAP-v2-enabled openFPGALoader build detected the XC7S15 at 1 MHz with explicit VID/PID.
+- CDC `info` returned firmware 1.0, hardware revision 1, VTref 975 mV, and button state 0.
+- PIO/DMA scans returned IDCODE `0x03620093` at requested TCK settings of 1, 6, and 15 MHz.
+- The local v2-enabled openFPGALoader build returned invalid IDs at 6 and 15 MHz; the 1 MHz default works. Retest higher speeds after future timing changes.
+- Windows WinUSB binding has not been tested on Windows.
+- Homebrew openFPGALoader 1.1.1 lacks CMSIS-DAP; the local v2-enabled build used a macOS-only workaround in ignored test sources for libusb DMA allocation.
+- SRAM bitstream programming remains unverified because no Spartan-7 bitstream was available for the test.
+- TCK output has not been independently measured with a logic analyzer.
 
 ## Maintenance
 
