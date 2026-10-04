@@ -35,3 +35,7 @@ Responses echo the same command and sequence number and prefix the payload with 
 - `0x50` SPI_CONFIG
 
 The protocol is designed for pipelining and response matching by `seq`.
+
+## M0 CDC bring-up commands
+
+Until the native vendor-class interface is implemented, the firmware accepts newline-terminated `INFO` and `VTREF` commands over USB CDC. Responses begin with `RPJTAG_INFO` or `RPJTAG_VTREF` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.

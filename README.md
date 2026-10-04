@@ -22,7 +22,20 @@ cmake --build build
 ```bash
 cd /Users/klingler/Nextcloud/Develop/Pico/rpjtag
 python3 fw/test/test_tap.py
+python3 fw/test/test_host_protocol.py
 ```
+
+## Query the attached board
+
+Install the host serial dependency and query the adapter over its USB CDC port:
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 tools/rpjtag.py info --port /dev/cu.usbmodemXXXX
+python3 tools/rpjtag.py vtref --port /dev/cu.usbmodemXXXX
+```
+
+Replace `/dev/cu.usbmodemXXXX` with the serial device name shown on the host.
 
 ## Hardware target
 

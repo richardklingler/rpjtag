@@ -1,20 +1,22 @@
 # Commit Message
 
-Add rpJTAG Pico 2 W firmware bring-up scaffold
+Add M0 USB CDC query path
 
-- Add the initial Pico 2 W / RP2354B firmware project with GPIO, button, LED, and VTref ADC bring-up.
-- Enable USB CDC stdio and set the device identity to VID/PID `0x1209:0x5306`, manufacturer `Klingler Engineering`, and product `rpJTAG`.
-- Add native-protocol notes, a Python host-side helper, and TAP-state tests.
-- Document build and test commands, update the firmware specification with the registered USB IDs, and ignore `fw/build/` output.
+- Add newline-delimited `INFO` and `VTREF` commands to the Pico 2 W firmware.
+- Replace the host helper's hard-coded info response with a PySerial-backed CDC client and `info`/`vtref` CLI commands.
+- Add fake-serial tests, declare the PySerial dependency, and document the temporary M0 command interface.
 
 ## Scope
 
-This is an M0 bring-up scaffold. USB currently provides CDC stdio for enumeration; CMSIS-DAP and the native USB interface described in the specification are not implemented yet.
+USB CDC still provides the transport; the binary native vendor-class interface and JTAG engine remain future milestones. A live INFO round-trip has been confirmed on the attached board; the reported VTref reading is only 85 mV and still needs electrical validation.
 
 ## Verification
 
-- `cmake --build fw/build -j4` succeeds with the configured Pico SDK and ARM toolchain.
+- `python3 fw/test/test_host_protocol.py` passes.
 - `python3 fw/test/test_tap.py` passes.
+- Firmware builds successfully with the configured Pico SDK and ARM toolchain.
+- Attached-board `info` query returned firmware version 256, hardware revision 1, VTref 85 mV, and button state 0.
+- VTref accuracy has not been validated against a known voltage.
 
 ## Maintenance
 

@@ -3,8 +3,19 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import struct
 from dataclasses import dataclass
+from typing import Protocol
+
+
+class SerialDevice(Protocol):
+    def write(self, data: bytes) -> int: ...
+
+    def flush(self) -> None: ...
+
+    def readline(self) -> bytes: ...
 
 
 @dataclass
@@ -29,23 +40,72 @@ class MsgHeader:
 
 
 class RpjtagClient:
-    """Small convenience wrapper for future host-side testing against the adapter."""
+    """Host client for the temporary M0 command interface over USB CDC."""
 
-    def __init__(self, device=None):
+    def __init__(self, device: SerialDevice):
         self.device = device
 
+    def _request(self, command: str, response_prefix: str) -> str:
+        self.device.write(f"{command}\n".encode("ascii"))
+        self.device.flush()
+
+        while True:
+            response = self.device.readline()
+            if not response:
+                raise TimeoutError(f"timed out waiting for {command} response")
+
+            line = response.decode("ascii", errors="replace").strip()
+            if line.startswith("RPJTAG_ERROR "):
+                raise RuntimeError(line.removeprefix("RPJTAG_ERROR "))
+            if line.startswith(response_prefix):
+                return line.removeprefix(response_prefix)
+
+    @staticmethod
+    def _parse_fields(payload: str) -> dict[str, int | str]:
+        fields: dict[str, int | str] = {}
+        for field in payload.split():
+            key, separator, value = field.partition("=")
+            if not separator:
+                continue
+            try:
+                fields[key] = int(value, 0)
+            except ValueError:
+                fields[key] = value
+        return fields
+
     def get_info(self) -> dict[str, int | str]:
-        return {
-            "fw_version": 0x0100,
-            "hw_rev": 0x01,
-            "max_bsr_bits": 4096,
-            "protocol": "rpjtag native",
-        }
+        return self._parse_fields(self._request("INFO", "RPJTAG_INFO "))
+
+    def get_vtref_mv(self) -> int:
+        fields = self._parse_fields(self._request("VTREF", "RPJTAG_VTREF "))
+        value = fields.get("mv")
+        if not isinstance(value, int):
+            raise ValueError("VTREF response did not contain an integer millivolt value")
+        return value
 
     def set_tck(self, hz: int) -> int:
-        return hz
+        raise NotImplementedError(f"setting TCK to {hz} Hz is implemented in milestone M1")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Query an rpJTAG adapter over USB CDC")
+    parser.add_argument("command", choices=("info", "vtref"))
+    parser.add_argument("--port", required=True, help="USB CDC serial port, e.g. /dev/cu.usbmodemXXXX")
+    parser.add_argument("--timeout", type=float, default=3.0, help="response timeout in seconds")
+    arguments = parser.parse_args()
+
+    try:
+        import serial
+    except ImportError as error:
+        raise SystemExit("Install host dependencies with: python3 -m pip install -r requirements.txt") from error
+
+    with serial.Serial(arguments.port, baudrate=115200, timeout=arguments.timeout) as device:
+        client = RpjtagClient(device)
+        if arguments.command == "info":
+            print(json.dumps(client.get_info(), indent=2))
+        else:
+            print(f"{client.get_vtref_mv()} mV")
 
 
 if __name__ == "__main__":
-    client = RpjtagClient()
-    print(client.get_info())
+    main()
