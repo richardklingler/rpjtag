@@ -69,6 +69,65 @@ class NativeClientTests(unittest.TestCase):
         self.assertEqual(NativeProtocolClient(transport).chain_detect(),
                          ([0x03620093, 0], 12))
 
+    def test_bsr_config_encodes_metadata_and_safe_vector(self) -> None:
+        transport = FakeBulkTransport(response_frame(0x30, 0, b""))
+        client = NativeProtocolClient(transport)
+
+        client.bsr_config(10, 0x01, 0x01, 0x26, 0x3F, b"\x55\x01")
+
+        request = NativeFrame.decode(transport.writes[0])
+        self.assertEqual(request.payload,
+                         struct.pack("<HIIII", 10, 1, 1, 0x26, 0x3F) + b"\x55\x01")
+
+    def test_bsr_sample_returns_packed_capture(self) -> None:
+        capture = bytes((index & 0xFF for index in range(43)))
+        transport = FakeBulkTransport(response_frame(0x31, 0, capture))
+
+        self.assertEqual(NativeProtocolClient(transport).bsr_sample(339), capture)
+        self.assertEqual(NativeFrame.decode(transport.writes[0]).payload, b"")
+
+    def test_bsr_stream_start_encodes_mode_and_mask(self) -> None:
+        transport = FakeBulkTransport(
+            response_frame(0x30, 0, b"") + response_frame(0x32, 1, b"")
+        )
+        client = NativeProtocolClient(transport)
+        client.bsr_config(10, 1, 1, 0x26, 0x3F, bytes(2))
+
+        client.bsr_stream_start(5000, mode=1, mask=b"\x03\x02")
+
+        request = NativeFrame.decode(transport.writes[1])
+        self.assertEqual(request.payload, struct.pack("<IB", 5000, 1) + b"\x03\x02")
+
+    def test_stream_event_before_start_ack_is_queued(self) -> None:
+        vector = bytes((index & 0xFF for index in range(43)))
+        stream_payload = struct.pack("<IHHI", 0x12345678, 2, 0xFFFF, 4) + vector
+        responses = (
+            response_frame(0x30, 0, b"")
+            + NativeFrame(0x32, 0, 0, stream_payload).encode()
+            + response_frame(0x32, 1, b"")
+        )
+        client = NativeProtocolClient(FakeBulkTransport(responses))
+        client.bsr_config(339, 1, 1, 0x26, 0x3F, bytes(43))
+
+        client.bsr_stream_start(1000, mode=1)
+        frame = client.read_bsr_stream()
+
+        self.assertEqual(frame.timestamp_us, 0x212345678)
+        self.assertEqual(frame.dropped_captures, 4)
+        self.assertEqual(frame.full_vector, vector)
+
+    def test_change_only_stream_decodes_index_and_value(self) -> None:
+        delta = struct.pack("<HH", 2, 0x8005)
+        payload = struct.pack("<IHHI", 10, 0, 2, 7) + delta
+        client = NativeProtocolClient(FakeBulkTransport(NativeFrame(0x32, 8, 0, payload).encode()))
+        client._bsr_bit_count = 16
+
+        frame = client.read_bsr_stream()
+
+        self.assertIsNone(frame.full_vector)
+        self.assertEqual(frame.changes, {2: False, 5: True})
+        self.assertEqual(frame.dropped_captures, 7)
+
     def test_nonzero_status_raises_protocol_error(self) -> None:
         transport = FakeBulkTransport(response_frame(0x10, 0, b"", status=6))
 

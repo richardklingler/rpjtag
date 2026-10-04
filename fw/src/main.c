@@ -171,7 +171,9 @@ int main(void) {
         poll_usb_commands();
 
         if (tud_vendor_mounted() || tud_vendor_n_mounted(1)) {
-            sleep_ms(1);
+            if (!native_protocol_is_streaming()) {
+                sleep_ms(1);
+            }
             continue;
         }
 

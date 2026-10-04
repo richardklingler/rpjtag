@@ -24,6 +24,8 @@
 #define NATIVE_IR_MARKER_BITS 64u
 #define NATIVE_IR_DETECT_BITS (NATIVE_MAX_CHAIN_IR_BITS + NATIVE_IR_MARKER_BITS)
 #define NATIVE_BATCH_MAX_COMMANDS 32u
+#define NATIVE_STREAM_MAX_CHANGES 100u
+#define NATIVE_STREAM_FULL_VECTOR 0xffffu
 
 enum {
     NATIVE_FLAG_MORE = 1u,
@@ -56,6 +58,10 @@ enum {
     NATIVE_CMD_BATCH = 0x16,
     NATIVE_CMD_CHAIN_DETECT = 0x20,
     NATIVE_CMD_CHAIN_CONFIG = 0x21,
+    NATIVE_CMD_BSR_CONFIG = 0x30,
+    NATIVE_CMD_BSR_SAMPLE = 0x31,
+    NATIVE_CMD_BSR_STREAM_START = 0x32,
+    NATIVE_CMD_BSR_STREAM_STOP = 0x33,
 };
 
 enum {
@@ -107,6 +113,23 @@ static uint8_t native_chain_count = 1;
 static uint8_t native_active_device;
 static uint8_t native_detected_count;
 static bool native_chain_configured;
+static uint16_t native_bsr_length;
+static uint32_t native_bsr_sample_opcode;
+static uint32_t native_bsr_preload_opcode;
+static uint32_t native_bsr_extest_opcode;
+static uint32_t native_bsr_bypass_opcode;
+static uint8_t native_bsr_safe_vector[NATIVE_MAX_SCAN_BYTES];
+static bool native_bsr_configured;
+static bool native_stream_active;
+static uint32_t native_stream_interval_us;
+static uint8_t native_stream_mode;
+static uint8_t native_stream_mask[NATIVE_MAX_SCAN_BYTES];
+static uint8_t native_stream_previous[NATIVE_MAX_SCAN_BYTES];
+static uint64_t native_stream_next_us;
+static uint32_t native_stream_dropped;
+static uint8_t native_stream_sequence;
+static bool native_stream_has_baseline;
+static bool native_stream_needs_full;
 
 static uint8_t frame_header[NATIVE_HEADER_SIZE];
 static uint8_t frame_payload[NATIVE_MAX_PAYLOAD];
@@ -171,11 +194,12 @@ static void copy_bits(uint8_t *destination, uint32_t destination_bit,
     }
 }
 
-static bool tap_goto(uint8_t target) {
-    if (target >= 16) {
+static bool tap_append_path(uint8_t start, uint8_t target,
+                            uint8_t *tms_bits, uint32_t *bit_count) {
+    if (start >= 16 || target >= 16) {
         return false;
     }
-    if (target == native_tap_state) {
+    if (target == start) {
         return true;
     }
 
@@ -185,8 +209,8 @@ static bool tap_goto(uint8_t target) {
     bool visited[16] = {false};
     uint32_t queue_read = 0;
     uint32_t queue_write = 0;
-    queue[queue_write++] = native_tap_state;
-    visited[native_tap_state] = true;
+    queue[queue_write++] = start;
+    visited[start] = true;
 
     while (queue_read < queue_write && !visited[target]) {
         const uint8_t state = queue[queue_read++];
@@ -206,14 +230,24 @@ static bool tap_goto(uint8_t target) {
 
     uint8_t reversed[16];
     uint32_t path_length = 0;
-    for (uint8_t state = target; state != native_tap_state; state = parent[state]) {
+    for (uint8_t state = target; state != start; state = parent[state]) {
         reversed[path_length++] = parent_tms[state];
     }
-    uint8_t tms_bits[2] = {0};
     for (uint32_t bit = 0; bit < path_length; ++bit) {
-        set_bit(tms_bits, bit, reversed[path_length - bit - 1u] != 0);
+        set_bit(tms_bits, *bit_count + bit,
+                reversed[path_length - bit - 1u] != 0);
     }
-    dap_jtag_sequence_bits(path_length, tms_bits, NULL, NULL);
+    *bit_count += path_length;
+    return true;
+}
+
+static bool tap_goto(uint8_t target) {
+    uint8_t tms_bits[2] = {0};
+    uint32_t bit_count = 0;
+    if (!tap_append_path(native_tap_state, target, tms_bits, &bit_count)) {
+        return false;
+    }
+    dap_jtag_sequence_bits(bit_count, tms_bits, NULL, NULL);
     native_tap_state = target;
     return true;
 }
@@ -299,6 +333,78 @@ static bool scan_register(bool instruction, uint32_t bit_count,
         copy_bits(tdo, 0, scan_tdo, active_offset, bit_count);
     }
     return tap_goto(end_state);
+}
+
+static bool capture_bsr(uint8_t *captured) {
+    if (!native_chain_configured || !native_bsr_configured ||
+        native_active_device >= native_chain_count) {
+        return false;
+    }
+    static uint8_t sequence_tms[NATIVE_MAX_SCAN_BYTES];
+    static uint8_t sequence_tdi[NATIVE_MAX_SCAN_BYTES];
+    static uint8_t sequence_tdo[NATIVE_MAX_SCAN_BYTES];
+    uint32_t total_ir_bits = 0;
+    for (uint32_t index = 0; index < native_chain_count; ++index) {
+        total_ir_bits += native_chain[index].ir_length;
+    }
+    const uint32_t total_dr_bits = native_bsr_length + native_chain_count - 1u;
+    if (total_ir_bits == 0 || total_dr_bits == 0 ||
+        total_ir_bits + total_dr_bits + 32u > NATIVE_MAX_SCAN_BITS) {
+        return false;
+    }
+
+    memset(sequence_tms, 0, sizeof(sequence_tms));
+    memset(sequence_tdi, 0, sizeof(sequence_tdi));
+    memset(sequence_tdo, 0, sizeof(sequence_tdo));
+    uint32_t total_bits = 0;
+    if (!tap_append_path(native_tap_state, TAP_SHIFT_IR,
+                         sequence_tms, &total_bits)) {
+        return false;
+    }
+
+    for (uint32_t device = 0; device < native_chain_count; ++device) {
+        const uint32_t length = native_chain[device].ir_length;
+        const uint32_t opcode = device == native_active_device ?
+            native_bsr_sample_opcode : native_chain[device].bypass_opcode;
+        for (uint32_t bit = 0; bit < length; ++bit) {
+            set_bit(sequence_tdi, total_bits + bit,
+                    ((opcode >> bit) & 1u) != 0);
+        }
+        total_bits += length;
+    }
+    set_bit(sequence_tms, total_bits - 1u, true);
+    native_tap_state = TAP_EXIT1_IR;
+    if (!tap_append_path(native_tap_state, TAP_RUN_TEST_IDLE,
+                         sequence_tms, &total_bits) ||
+        !tap_append_path(TAP_RUN_TEST_IDLE, TAP_SHIFT_DR,
+                         sequence_tms, &total_bits)) {
+        return false;
+    }
+
+    const uint32_t dr_start = total_bits;
+    const uint32_t active_dr_offset = native_active_device;
+    for (uint32_t bit = 0; bit < total_dr_bits; ++bit) {
+        const bool active_bsr_bit = bit >= active_dr_offset &&
+            bit < active_dr_offset + native_bsr_length;
+        set_bit(sequence_tdi, total_bits + bit, !active_bsr_bit);
+    }
+    total_bits += total_dr_bits;
+    set_bit(sequence_tms, total_bits - 1u, true);
+    native_tap_state = TAP_EXIT1_DR;
+    if (!tap_append_path(native_tap_state, TAP_RUN_TEST_IDLE,
+                         sequence_tms, &total_bits) ||
+        total_bits > NATIVE_MAX_SCAN_BITS) {
+        return false;
+    }
+
+    dap_jtag_sequence_bits(total_bits, sequence_tms, sequence_tdi, sequence_tdo);
+    native_tap_state = TAP_RUN_TEST_IDLE;
+    memset(captured, 0, (native_bsr_length + 7u) / 8u);
+    for (uint32_t bit = 0; bit < native_bsr_length; ++bit) {
+        set_bit(captured, bit,
+                get_bit(sequence_tdo, dr_start + active_dr_offset + bit));
+    }
+    return true;
 }
 
 static uint8_t detect_chain(uint32_t *idcodes, uint8_t *device_count,
@@ -667,6 +773,8 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
         native_chain_count = count;
         native_active_device = active;
         native_chain_configured = true;
+        native_bsr_configured = false;
+        native_stream_active = false;
         DAP_Data.jtag_dev.count = count;
         DAP_Data.jtag_dev.index = active;
         uint16_t before = 0;
@@ -680,6 +788,91 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
         }
         return 1;
     }
+    case NATIVE_CMD_BSR_CONFIG: {
+        if (!native_chain_configured || native_active_device >= native_chain_count) {
+            response[0] = NATIVE_STATUS_NOT_CONFIGURED;
+            return 1;
+        }
+        if (length < 18) {
+            response[0] = NATIVE_STATUS_BAD_LEN;
+            return 1;
+        }
+        const uint16_t bit_count = read_u16(payload);
+        const uint8_t ir_length = native_chain[native_active_device].ir_length;
+        const uint32_t bit_bytes = (bit_count + 7u) / 8u;
+        if (bit_count == 0 || bit_count > NATIVE_MAX_SCAN_BITS ||
+            length != 18u + bit_bytes ||
+            (ir_length < 32 &&
+             ((read_u32(payload + 2) >> ir_length) != 0 ||
+              (read_u32(payload + 6) >> ir_length) != 0 ||
+              (read_u32(payload + 10) >> ir_length) != 0 ||
+              (read_u32(payload + 14) >> ir_length) != 0))) {
+            response[0] = NATIVE_STATUS_BAD_LEN;
+            return 1;
+        }
+        native_bsr_length = bit_count;
+        native_bsr_sample_opcode = read_u32(payload + 2);
+        native_bsr_preload_opcode = read_u32(payload + 6);
+        native_bsr_extest_opcode = read_u32(payload + 10);
+        native_bsr_bypass_opcode = read_u32(payload + 14);
+        memcpy(native_bsr_safe_vector, payload + 18, bit_bytes);
+        native_bsr_configured = true;
+        native_stream_active = false;
+        return 1;
+    }
+    case NATIVE_CMD_BSR_SAMPLE: {
+        if (length != 0 || !native_chain_configured || !native_bsr_configured) {
+            response[0] = NATIVE_STATUS_NOT_CONFIGURED;
+            return 1;
+        }
+        const uint32_t ir_length = native_chain[native_active_device].ir_length;
+        const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
+        if (capacity < 1u + bsr_bytes) {
+            response[0] = NATIVE_STATUS_BUFFER_OVERFLOW;
+            return 1;
+        }
+        uint8_t captured[NATIVE_MAX_SCAN_BYTES];
+        (void)ir_length;
+        if (!capture_bsr(captured)) {
+            response[0] = NATIVE_STATUS_TDO_STUCK;
+            return 1;
+        }
+        memcpy(response + 1, captured, bsr_bytes);
+        return 1u + bsr_bytes;
+    }
+    case NATIVE_CMD_BSR_STREAM_START: {
+        if (!native_chain_configured || !native_bsr_configured) {
+            response[0] = NATIVE_STATUS_NOT_CONFIGURED;
+            return 1;
+        }
+        const uint32_t mask_bytes = (native_bsr_length + 7u) / 8u;
+        if ((length != 5 && length != 5u + mask_bytes) || payload[4] > 1 ||
+            NATIVE_HEADER_SIZE + 12u + mask_bytes > CFG_TUD_VENDOR_TX_BUFSIZE) {
+            response[0] = NATIVE_STATUS_BAD_LEN;
+            return 1;
+        }
+        native_stream_interval_us = read_u32(payload);
+        native_stream_mode = payload[4];
+        memset(native_stream_mask, 0xff, mask_bytes);
+        if (length == 5u + mask_bytes) {
+            memcpy(native_stream_mask, payload + 5, mask_bytes);
+        }
+        native_stream_active = true;
+        native_stream_next_us = time_us_64();
+        native_stream_dropped = 0;
+        native_stream_sequence = 0;
+        native_stream_has_baseline = false;
+        native_stream_needs_full = true;
+        memset(native_stream_previous, 0, mask_bytes);
+        return 1;
+    }
+    case NATIVE_CMD_BSR_STREAM_STOP:
+        if (length != 0) {
+            response[0] = NATIVE_STATUS_BAD_LEN;
+            return 1;
+        }
+        native_stream_active = false;
+        return 1;
     default:
         response[0] = NATIVE_STATUS_BAD_CMD;
         return 1;
@@ -786,6 +979,121 @@ static void process_frame(void) {
     handle_message(frame_cmd, frame_seq, frame_flags, frame_payload, frame_payload_used);
 }
 
+static bool send_bsr_stream_frame(uint16_t change_count,
+                                  const uint8_t *vector,
+                                  const uint16_t *changes,
+                                  uint64_t timestamp_us) {
+    const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
+    const bool full_vector = change_count == NATIVE_STREAM_FULL_VECTOR;
+    const uint32_t data_length = full_vector ? bsr_bytes : 2u * change_count;
+    const uint32_t payload_length = 12u + data_length;
+    const uint32_t frame_length = NATIVE_HEADER_SIZE + payload_length;
+    uint8_t frame[NATIVE_HEADER_SIZE + 12u + NATIVE_MAX_SCAN_BYTES];
+
+    frame[0] = NATIVE_CMD_BSR_STREAM_START;
+    frame[1] = native_stream_sequence++;
+    write_u16(frame + 2, 0);
+    write_u32(frame + 4, payload_length);
+    write_u32(frame + NATIVE_HEADER_SIZE, (uint32_t)timestamp_us);
+    write_u16(frame + NATIVE_HEADER_SIZE + 4, (uint16_t)(timestamp_us >> 32));
+    write_u16(frame + NATIVE_HEADER_SIZE + 6, change_count);
+    write_u32(frame + NATIVE_HEADER_SIZE + 8, native_stream_dropped);
+    if (full_vector) {
+        memcpy(frame + NATIVE_HEADER_SIZE + 12, vector, bsr_bytes);
+    } else {
+        for (uint32_t index = 0; index < change_count; ++index) {
+            write_u16(frame + NATIVE_HEADER_SIZE + 12u + 2u * index,
+                      changes[index]);
+        }
+    }
+
+    if (!tud_vendor_n_mounted(NATIVE_INTERFACE) ||
+        tud_vendor_n_write_available(NATIVE_INTERFACE) < frame_length) {
+        ++native_stream_dropped;
+        native_stream_needs_full = true;
+        return false;
+    }
+    const uint32_t written = tud_vendor_n_write(NATIVE_INTERFACE, frame, frame_length);
+    if (written != frame_length) {
+        ++native_stream_dropped;
+        native_stream_needs_full = true;
+        return false;
+    }
+    tud_vendor_n_write_flush(NATIVE_INTERFACE);
+    return true;
+}
+
+static void poll_bsr_stream(void) {
+    if (!native_stream_active || !native_bsr_configured) {
+        return;
+    }
+    if (!tud_vendor_n_mounted(NATIVE_INTERFACE)) {
+        native_stream_active = false;
+        return;
+    }
+
+    const uint64_t now_us = time_us_64();
+    if (native_stream_interval_us != 0 && now_us < native_stream_next_us) {
+        return;
+    }
+    if (native_stream_interval_us != 0) {
+        if (now_us > native_stream_next_us) {
+            native_stream_dropped += (uint32_t)((now_us - native_stream_next_us) /
+                                                 native_stream_interval_us);
+        }
+        native_stream_next_us = now_us + native_stream_interval_us;
+    }
+
+    static uint8_t captured[NATIVE_MAX_SCAN_BYTES];
+    const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
+    if (!capture_bsr(captured)) {
+        ++native_stream_dropped;
+        native_stream_needs_full = true;
+        return;
+    }
+    for (uint32_t index = 0; index < bsr_bytes; ++index) {
+        captured[index] &= native_stream_mask[index];
+    }
+    const uint64_t timestamp_us = time_us_64();
+
+    if (native_stream_mode == 0) {
+        if (send_bsr_stream_frame(NATIVE_STREAM_FULL_VECTOR, captured, NULL,
+                                  timestamp_us)) {
+            memcpy(native_stream_previous, captured, bsr_bytes);
+        }
+        return;
+    }
+
+    if (!native_stream_has_baseline || native_stream_needs_full) {
+        if (send_bsr_stream_frame(NATIVE_STREAM_FULL_VECTOR, captured, NULL,
+                                  timestamp_us)) {
+            native_stream_has_baseline = true;
+            native_stream_needs_full = false;
+        }
+        memcpy(native_stream_previous, captured, bsr_bytes);
+        return;
+    }
+
+    uint16_t changes[NATIVE_STREAM_MAX_CHANGES];
+    uint32_t change_count = 0;
+    for (uint32_t bit = 0; bit < native_bsr_length; ++bit) {
+        if (get_bit(captured, bit) != get_bit(native_stream_previous, bit)) {
+            if (change_count == NATIVE_STREAM_MAX_CHANGES) {
+                ++native_stream_dropped;
+                native_stream_needs_full = true;
+                memcpy(native_stream_previous, captured, bsr_bytes);
+                return;
+            }
+            changes[change_count++] = (uint16_t)(bit |
+                (get_bit(captured, bit) ? 0x8000u : 0u));
+        }
+    }
+    memcpy(native_stream_previous, captured, bsr_bytes);
+    if (change_count != 0) {
+        send_bsr_stream_frame((uint16_t)change_count, NULL, changes, timestamp_us);
+    }
+}
+
 static void reset_frame(void) {
     frame_header_used = 0;
     frame_payload_expected = 0;
@@ -844,6 +1152,22 @@ void native_protocol_init(void) {
     native_active_device = 0;
     native_detected_count = 0;
     native_chain_configured = false;
+    native_bsr_length = 0;
+    native_bsr_sample_opcode = 0;
+    native_bsr_preload_opcode = 0;
+    native_bsr_extest_opcode = 0;
+    native_bsr_bypass_opcode = 0;
+    native_bsr_configured = false;
+    native_stream_active = false;
+    native_stream_interval_us = 0;
+    native_stream_mode = 0;
+    native_stream_next_us = 0;
+    native_stream_dropped = 0;
+    native_stream_sequence = 0;
+    native_stream_has_baseline = false;
+    native_stream_needs_full = false;
+    memset(native_stream_mask, 0, sizeof(native_stream_mask));
+    memset(native_stream_previous, 0, sizeof(native_stream_previous));
     tap_reset();
 }
 
@@ -860,6 +1184,7 @@ void native_protocol_task(void) {
             feed_byte(input[index]);
         }
     }
+    poll_bsr_stream();
 }
 
 void native_protocol_get_stats(uint32_t *received_bytes, uint32_t *frames,
@@ -873,4 +1198,8 @@ void native_protocol_get_stats(uint32_t *received_bytes, uint32_t *frames,
     if (responses != NULL) {
         *responses = native_response_count;
     }
+}
+
+bool native_protocol_is_streaming(void) {
+    return native_stream_active;
 }

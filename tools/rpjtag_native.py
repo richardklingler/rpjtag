@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -54,12 +55,22 @@ class NativeProtocolError(RuntimeError):
         self.response = response
 
 
+@dataclass(frozen=True)
+class BsrStreamFrame:
+    timestamp_us: int
+    dropped_captures: int
+    full_vector: bytes | None
+    changes: dict[int, bool]
+
+
 class NativeProtocolClient:
     def __init__(self, transport: BulkTransport, timeout_ms: int = 3000):
         self.transport = transport
         self.timeout_ms = timeout_ms
         self._sequence = 0
         self._read_buffer = bytearray()
+        self._bsr_bit_count: int | None = None
+        self._pending_stream_frames: deque[BsrStreamFrame] = deque(maxlen=256)
 
     def _read_exact(self, length: int) -> bytes:
         while len(self._read_buffer) < length:
@@ -71,6 +82,38 @@ class NativeProtocolClient:
         del self._read_buffer[:length]
         return result
 
+    def _read_frame(self) -> NativeFrame:
+        header = self._read_exact(HEADER.size)
+        cmd, seq, flags, payload_length = HEADER.unpack(header)
+        if payload_length > 4096:
+            raise ValueError("native response payload exceeds client limit")
+        return NativeFrame(cmd, seq, flags, self._read_exact(payload_length))
+
+    @staticmethod
+    def _decode_bsr_stream(frame: NativeFrame, bit_count: int) -> BsrStreamFrame:
+        if frame.cmd != 0x32 or frame.flags != 0 or len(frame.payload) < 12:
+            raise ValueError("invalid BSR stream frame")
+        timestamp_low, timestamp_high, change_count, dropped = struct.unpack_from(
+            "<IHHI", frame.payload
+        )
+        data = frame.payload[12:]
+        timestamp = timestamp_low | (timestamp_high << 32)
+        if change_count == 0xFFFF:
+            expected_length = (bit_count + 7) // 8
+            if len(data) != expected_length:
+                raise ValueError("full BSR stream vector has an invalid length")
+            return BsrStreamFrame(timestamp, dropped, data, {})
+        if len(data) != 2 * change_count:
+            raise ValueError("BSR stream delta count does not match payload length")
+        changes: dict[int, bool] = {}
+        for offset in range(0, len(data), 2):
+            encoded = struct.unpack_from("<H", data, offset)[0]
+            bit = encoded & 0x7FFF
+            if bit >= bit_count:
+                raise ValueError("BSR stream delta index is out of range")
+            changes[bit] = bool(encoded & 0x8000)
+        return BsrStreamFrame(timestamp, dropped, None, changes)
+
     def request(self, cmd: int, payload: bytes = b"") -> bytes:
         sequence = self._sequence
         self._sequence = (self._sequence + 1) & 0xFF
@@ -79,14 +122,25 @@ class NativeProtocolClient:
         if written != len(frame):
             raise IOError(f"short USB write: {written} of {len(frame)} bytes")
 
-        header = self._read_exact(HEADER.size)
-        response_cmd, response_seq, flags, response_length = HEADER.unpack(header)
-        if response_cmd != cmd or response_seq != sequence or flags != 0:
-            raise ValueError("response command, sequence, or flags did not match request")
-        if response_length == 0:
+        while True:
+            response = self._read_frame()
+            is_matching_response = response.cmd == cmd and response.seq == sequence
+            is_stream_event = response.cmd == 0x32 and (
+                not is_matching_response or len(response.payload) != 1
+            )
+            if is_stream_event:
+                if self._bsr_bit_count is None:
+                    raise ValueError("received a BSR stream frame before BSR configuration")
+                self._pending_stream_frames.append(
+                    self._decode_bsr_stream(response, self._bsr_bit_count)
+                )
+                continue
+            if not is_matching_response or response.flags != 0:
+                raise ValueError("response command, sequence, or flags did not match request")
+            break
+        if not response.payload:
             raise ValueError("native response is missing its status byte")
-        response = self._read_exact(response_length)
-        status, body = response[0], response[1:]
+        status, body = response.payload[0], response.payload[1:]
         if status != 0:
             raise NativeProtocolError(status, body)
         return body
@@ -170,6 +224,61 @@ class NativeProtocolClient:
                 raise ValueError("IR lengths and BYPASS opcodes are out of range")
             payload.extend(struct.pack("<BI", ir_length, bypass_opcode))
         self.request(0x21, bytes(payload))
+
+    def bsr_config(self, bit_count: int, sample_opcode: int,
+                   preload_opcode: int, extest_opcode: int,
+                   bypass_opcode: int, safe_vector: bytes) -> None:
+        if not 1 <= bit_count <= MAX_SCAN_BITS:
+            raise ValueError(f"BSR length must be between 1 and {MAX_SCAN_BITS} bits")
+        byte_count = (bit_count + 7) // 8
+        if len(safe_vector) != byte_count:
+            raise ValueError("safe-vector length does not match BSR bit count")
+        opcodes = (sample_opcode, preload_opcode, extest_opcode, bypass_opcode)
+        if any(not 0 <= opcode <= 0xFFFFFFFF for opcode in opcodes):
+            raise ValueError("instruction opcodes must fit in four bytes")
+        payload = struct.pack("<HIIII", bit_count, *opcodes) + safe_vector
+        self.request(0x30, payload)
+        self._bsr_bit_count = bit_count
+
+    def bsr_sample(self, bit_count: int) -> bytes:
+        if not 1 <= bit_count <= MAX_SCAN_BITS:
+            raise ValueError(f"BSR length must be between 1 and {MAX_SCAN_BITS} bits")
+        response = self.request(0x31)
+        expected_bytes = (bit_count + 7) // 8
+        if len(response) != expected_bytes:
+            raise ValueError("BSR_SAMPLE response length does not match BSR bit count")
+        return response
+
+    def bsr_stream_start(self, interval_us: int, mode: int = 0,
+                         mask: bytes | None = None) -> None:
+        if self._bsr_bit_count is None:
+            raise RuntimeError("configure the BSR before starting a stream")
+        if not 0 <= interval_us <= 0xFFFFFFFF or mode not in (0, 1):
+            raise ValueError("stream interval or mode is out of range")
+        byte_count = (self._bsr_bit_count + 7) // 8
+        if mask is not None and len(mask) != byte_count:
+            raise ValueError("stream mask length does not match BSR bit count")
+        payload = struct.pack("<IB", interval_us, mode)
+        if mask is not None:
+            payload += mask
+        self.request(0x32, payload)
+
+    def bsr_stream_stop(self) -> None:
+        self.request(0x33)
+
+    def read_bsr_stream(self, timeout_ms: int | None = None) -> BsrStreamFrame:
+        if self._bsr_bit_count is None:
+            raise RuntimeError("configure the BSR before reading stream frames")
+        if self._pending_stream_frames:
+            return self._pending_stream_frames.popleft()
+        previous_timeout = self.timeout_ms
+        if timeout_ms is not None:
+            self.timeout_ms = timeout_ms
+        try:
+            frame = self._read_frame()
+        finally:
+            self.timeout_ms = previous_timeout
+        return self._decode_bsr_stream(frame, self._bsr_bit_count)
 
 
 class PyUsbBulkTransport:

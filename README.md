@@ -23,6 +23,7 @@ cmake --build build
 cd /Users/klingler/Nextcloud/Develop/Pico/rpjtag
 python3 fw/test/test_tap.py
 python3 fw/test/test_host_protocol.py
+python3 fw/test/test_native_protocol.py
 ```
 
 ## Query the attached board
@@ -48,6 +49,8 @@ python3 tools/rpjtag_native.py vtref
 python3 tools/rpjtag_native.py detect
 python3 tools/rpjtag_native.py tck --hz 1000000
 ```
+
+The `NativeProtocolClient` also exposes `bsr_config`, `bsr_sample`, `bsr_stream_start`, `read_bsr_stream`, and `bsr_stream_stop` for BSDL-driven boundary sampling. The XC7S15 profile is 339 bits; stream mode 0 returns each vector, while mode 1 sends a baseline and changed cells. Stream frames report a cumulative dropped-capture count.
 
 ## CMSIS-DAP v2
 

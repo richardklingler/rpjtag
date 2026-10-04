@@ -36,6 +36,14 @@ All multibyte fields are little-endian. Response payloads below omit the leading
 - `BATCH`: repeated `u8 command`, `u16 payload length`, payload records for commands `0x10`-`0x15`. Response is repeated `u8 command`, `u16 response length`, response payload (including each subcommand's status). At most 32 commands are accepted.
 - `CHAIN_DETECT`: response `u8 device count`, one `u32 IDCODE` per device (`0` means BYPASS-only), then `u16 aggregate IR length`. Device index 0 is nearest TDO.
 - `CHAIN_CONFIG`: request `u8 device count`, `u8 active device index`, then one record per device: `u8 IR length`, `u32 BYPASS opcode`. IR lengths are 1-32 bits; non-active devices are automatically padded for scans.
+- `BSR_CONFIG`: request `u16 boundary bits`, `u32 SAMPLE opcode`, `u32 PRELOAD opcode`, `u32 EXTEST opcode`, `u32 BYPASS opcode`, then `ceil(bits/8)` safe-vector bytes. The active chain device must already be configured.
+- `BSR_SAMPLE`: no request payload; returns the configured boundary register as `ceil(bits/8)` captured bytes using SAMPLE/PRELOAD. This operation does not select EXTEST.
+- `BSR_STREAM_START`: request `u32 interval microseconds`, `u8 mode` (`0` full vector each sample, `1` change-only), then an optional `ceil(BSR bits/8)` cell mask. `interval=0` samples as fast as the firmware task loop permits.
+- `BSR_STREAM_STOP`: no request payload.
+
+Unsolicited stream frames use command `0x32`, flags 0, and payload `u32 timestamp_us_low`, `u16 timestamp_us_high`, `u16 change_count_or_flag`, `u32 cumulative_dropped_captures`, then data. `change_count_or_flag=0xffff` means a full vector follows; otherwise that many `u16` records follow, with bit 15 as value and bits 0-14 as the BSR cell index. Change-only mode emits a full baseline at start and after a dropped/oversized delta frame. Frames that exceed available TX space are skipped and counted. With the current 256-byte vendor TX FIFO, streaming is limited to BSRs of at most 1888 bits.
+
+The included `hw/bsdl/xc7s15_ftgb196.bsd` declares XC7S15 FTGB196 with a 6-bit IR, 339-bit BSR, SAMPLE/PRELOAD `0x01`, EXTEST `0x26`, and BYPASS `0x3f`. The BSDL maps port `IO_A13` to package ball A13; BSR cell 307 is its output/control entry and cell 308 its input sample. On the Spartan Edge blinky test, A13/LED L2 toggled every approximately 0.5 seconds over 1,616 samples in 3.001 seconds (about 538 captures/s at the current TCK). The BSDL itself marks its data preliminary and unverified; confirm captures against known target signals before relying on other cell mappings.
 
 The device enumerates as a composite USB device: CMSIS-DAP v2 is vendor interface 0 (`CMSIS-DAP v2`), native protocol is vendor interface 1 (`rpjtag native`), and CDC diagnostics occupy interfaces 2 and 3.
 
