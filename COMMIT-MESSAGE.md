@@ -20,7 +20,7 @@ Add CMSIS-DAP v2 JTAG interface
 - The local v2-enabled openFPGALoader build returned invalid IDs at 6 and 15 MHz; the 1 MHz default works. Retest higher speeds after future timing changes.
 - Windows WinUSB binding has not been tested on Windows.
 - Homebrew openFPGALoader 1.1.1 lacks CMSIS-DAP; the local v2-enabled build used a macOS-only workaround in ignored test sources for libusb DMA allocation.
-- SRAM bitstream programming remains unverified because no Spartan-7 bitstream was available for the test.
+- Tried the bundled `spiOverJtag_xc7s15ftgb196.bit.gz` prebuilt image with `--write-sram`; transfer stalled at 23% and was interrupted. No flash-write option was used.
 - TCK output has not been independently measured with a logic analyzer.
 
 ## Maintenance
