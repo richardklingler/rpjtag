@@ -7,6 +7,7 @@
 #include "DAP_config.h"
 #include "DAP.h"
 #include "dap_jtag_io.h"
+#include "native_protocol.h"
 #include "pico/stdlib.h"
 #include "tusb.h"
 
@@ -143,8 +144,9 @@ int main(void) {
     stdio_init_all();
     board_init();
     DAP_Setup();
+    native_protocol_init();
 
-    puts("rpjtag firmware M0 bring-up ready");
+    puts("rpjtag firmware M3 native protocol ready");
     printf("USB VID: 0x%04x PID: 0x%04x\n", USB_VID, USB_PID);
     puts("Board: Pico 2 W, RP2350A");
 
@@ -152,11 +154,13 @@ int main(void) {
     while (true) {
         tud_task();
         if (poll_cmsis_dap()) {
+            native_protocol_task();
             continue;
         }
+        native_protocol_task();
         poll_usb_commands();
 
-        if (tud_vendor_mounted()) {
+        if (tud_vendor_mounted() || tud_vendor_n_mounted(1)) {
             sleep_ms(1);
             continue;
         }

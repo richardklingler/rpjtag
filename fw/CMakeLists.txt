@@ -19,6 +19,7 @@ pico_sdk_init()
 add_executable(rpjtag_firmware
     src/main.c
     src/dap_jtag_io.c
+    src/native_protocol.c
     src/usb_descriptors.c
     ${cmsis_dap_SOURCE_DIR}/Firmware/Source/DAP.c
 )

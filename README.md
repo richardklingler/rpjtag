@@ -40,6 +40,15 @@ python3 tools/rpjtag.py idcode --port /dev/cu.usbmodemXXXX
 Replace `/dev/cu.usbmodemXXXX` with the serial device name shown on the host.
 The IDCODE scan uses PIO and DMA. The attached Spartan-7 returned `0x03620093` at requested TCK settings of 1, 6, and 15 MHz.
 
+The native M3 interface uses PyUSB and appears as the `rpjtag native` vendor interface:
+
+```bash
+python3 tools/rpjtag_native.py info
+python3 tools/rpjtag_native.py vtref
+python3 tools/rpjtag_native.py detect
+python3 tools/rpjtag_native.py tck --hz 1000000
+```
+
 ## CMSIS-DAP v2
 
 The firmware exposes a CMSIS-DAP v2 bulk interface as USB interface 0 and keeps the CDC diagnostics as a separate interface. SWD is not enabled; JTAG operations use the PIO/DMA engine. The CMSIS-DAP default clock is 1 MHz for reliable first contact; OpenOCD can request faster clocks with `adapter speed`.
@@ -72,4 +81,4 @@ The Homebrew 1.1.1 bottle on the test host has CMSIS-DAP disabled. A local CMSIS
 - Flash: built-in QSPI flash
 - USB VID/PID: `0x1209` / `0x5306` (pid.codes registration)
 
-The current scaffold covers M0 bring-up and the M1 JTAG engine, with the M2 CMSIS-DAP v2 interface now integrated. See [docs/pico2w-wiring.md](docs/pico2w-wiring.md) for the provisional Pico 2 W header map. It is separate from the eventual custom-adapter pin assignment in the firmware specification.
+The firmware includes the M0 CDC diagnostics, M1 PIO/DMA JTAG engine, M2 CMSIS-DAP v2 interface, and M3 native USB protocol. See [docs/pico2w-wiring.md](docs/pico2w-wiring.md) for the provisional Pico 2 W header map. It is separate from the eventual custom-adapter pin assignment in the firmware specification.

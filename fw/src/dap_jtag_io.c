@@ -128,6 +128,10 @@ bool dap_jtag_set_tck(uint32_t frequency_hz) {
     return true;
 }
 
+uint32_t dap_jtag_get_tck(void) {
+    return jtag_requested_tck_hz();
+}
+
 static void jtag_set_sio_mode(void) {
     dap_jtag_pio_disable();
     for (uint pin = JTAG_TCK_PIN; pin <= JTAG_TDO_PIN; ++pin) {
@@ -223,6 +227,44 @@ static void jtag_run_constant_tms(uint32_t count, bool tms, const uint8_t *tdi,
     uint8_t tms_bits[JTAG_MAX_SEQUENCE_BYTES];
     memset(tms_bits, tms ? 0xff : 0, sizeof(tms_bits));
     jtag_run_cycles(count, tms_bits, tdi, tdo);
+}
+
+void dap_jtag_sequence_bits(uint32_t bit_count, const uint8_t *tms_bits,
+                            const uint8_t *tdi_bits, uint8_t *tdo_bits) {
+    if (tdo_bits != NULL) {
+        memset(tdo_bits, 0, (bit_count + 7u) / 8u);
+    }
+
+    for (uint32_t offset = 0; offset < bit_count;) {
+        const uint32_t chunk = bit_count - offset > JTAG_MAX_SEQUENCE_BITS ?
+            JTAG_MAX_SEQUENCE_BITS : bit_count - offset;
+        uint8_t chunk_tms[JTAG_MAX_SEQUENCE_BYTES] = {0};
+        uint8_t chunk_tdi[JTAG_MAX_SEQUENCE_BYTES] = {0};
+        uint8_t chunk_tdo[JTAG_MAX_SEQUENCE_BYTES] = {0};
+
+        for (uint32_t bit = 0; bit < chunk; ++bit) {
+            const uint32_t source_bit = offset + bit;
+            if (tms_bits != NULL &&
+                (tms_bits[source_bit / 8u] & (1u << (source_bit % 8u))) != 0) {
+                chunk_tms[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+            }
+            if (tdi_bits != NULL &&
+                (tdi_bits[source_bit / 8u] & (1u << (source_bit % 8u))) != 0) {
+                chunk_tdi[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
+            }
+        }
+
+        jtag_run_cycles(chunk, chunk_tms, chunk_tdi, tdo_bits != NULL ? chunk_tdo : NULL);
+        if (tdo_bits != NULL) {
+            for (uint32_t bit = 0; bit < chunk; ++bit) {
+                if ((chunk_tdo[bit / 8u] & (1u << (bit % 8u))) != 0) {
+                    const uint32_t destination_bit = offset + bit;
+                    tdo_bits[destination_bit / 8u] |= (uint8_t)(1u << (destination_bit % 8u));
+                }
+            }
+        }
+        offset += chunk;
+    }
 }
 
 void JTAG_Sequence(uint32_t info, const uint8_t *tdi, uint8_t *tdo) {
