@@ -13,9 +13,10 @@
 #define JTAG_TMS_PIN 3u
 #define JTAG_TDI_PIN 4u
 #define JTAG_TDO_PIN 5u
-#define JTAG_MAX_SEQUENCE_BITS 64u
+#define JTAG_MAX_SEQUENCE_BITS 512u
+#define JTAG_MAX_DAP_SEQUENCE_BITS 64u
 #define JTAG_MAX_SEQUENCE_BYTES (JTAG_MAX_SEQUENCE_BITS / 8u)
-#define JTAG_TX_WORD_COUNT 5u
+#define JTAG_TX_WORD_COUNT (1u + (JTAG_MAX_SEQUENCE_BITS * 2u + 31u) / 32u)
 #define JTAG_PIO_CYCLES_PER_TCK 3u
 #define JTAG_MIN_TCK_HZ 10000u
 #define JTAG_MAX_TCK_HZ 30000000u
@@ -270,7 +271,10 @@ void dap_jtag_sequence_bits(uint32_t bit_count, const uint8_t *tms_bits,
 void JTAG_Sequence(uint32_t info, const uint8_t *tdi, uint8_t *tdo) {
     uint32_t count = info & JTAG_SEQUENCE_TCK;
     if (count == 0) {
-        count = JTAG_MAX_SEQUENCE_BITS;
+        count = JTAG_MAX_DAP_SEQUENCE_BITS;
+    }
+    if (count > JTAG_MAX_DAP_SEQUENCE_BITS) {
+        return;
     }
     jtag_run_constant_tms(count, (info & JTAG_SEQUENCE_TMS) != 0,
                           tdi, (info & JTAG_SEQUENCE_TDO) ? tdo : NULL);

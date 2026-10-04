@@ -5,6 +5,7 @@ Add native BSR sampling and streaming
 - Implement BSR_STREAM_START/STOP with full-vector and change-only modes, optional masks, timestamps, and dropped-capture accounting.
 - Add host frame parsing/queueing and tests for unsolicited stream frames and deltas.
 - Combine BSR TAP navigation, SAMPLE IR, and capture DR into one bounded JTAG sequence to reduce PIO/DMA setup overhead.
+- Increase internal PIO/DMA sequence batches to 512 clocks while preserving the CMSIS-DAP 64-clock sequence limit.
 - Add read-only BSR_CONFIG and BSR_SAMPLE commands using per-device BSDL metadata; do not select EXTEST.
 - Add PyUSB BSR helpers/tests and document the XC7S15 FTGB196's 339-bit BSR and instruction opcodes.
 - Add a second vendor bulk interface for the native protocol while preserving CMSIS-DAP on interface 0 and moving CDC to interfaces 2/3.
@@ -21,7 +22,7 @@ Add native BSR sampling and streaming
 - The blinky on IO_L4N_T0_D05_14 (ball A13, BSR input cell 308) toggled every approximately 0.5 seconds during 1,616 read-only captures in 3.001 seconds (about 538 captures/s).
 - Live change-only streaming reported cell 308 transitions at approximately 0.5-second intervals with zero drops. A 60-second masked run delivered 122 frames including 121 transitions with zero drops.
 - Before the combined-scan optimization, full-vector mode delivered 3,437 frames in 3.000 seconds (1,145.5 frames/s) at 1 MHz with one dropped capture; at an applied 9.375 MHz it delivered 5,515 frames in 3.001 seconds (1,838 frames/s) with 10 drops.
-- The combined-scan firmware builds and all host tests pass. Its live capture rate and the one-hour no-loss acceptance run await reflashing the newest UF2.
+- The combined-scan firmware delivered 1,327.3 full vectors/s at 1 MHz with six observed A13 transitions and 18 drops in three seconds. The 512-clock batching build compiles and all host tests pass; its hardware rate and the one-hour no-loss run await reflashing the newest UF2.
 - The reflashed diagnostic image enumerates native USB correctly; GET_INFO succeeds with `rx_bytes=8`, `frames=1`, and `responses=1`. CDC and CMSIS-DAP remain functional.
 - Correcting the TAP reset transition yields native DR bytes `93006203`; CHAIN_DETECT reports the XC7S15 IDCODE `0x03620093` and aggregate IR length 6.
 - CHAIN_CONFIG succeeds for the detected single-device chain, configured DR capture still returns `93006203`, and a TAP_RESET+RUNTEST BATCH returns success for both commands.
