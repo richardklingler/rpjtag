@@ -1,0 +1,7 @@
+.program jtag_transfer
+.side_set 1
+
+.wrap_target
+    out pins, 2 side 0 [4]
+    in pins, 1 side 1 [4]
+.wrap

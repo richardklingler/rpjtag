@@ -13,6 +13,8 @@ add_executable(rpjtag_firmware
     src/main.c
 )
 
+pico_generate_pio_header(rpjtag_firmware ${CMAKE_CURRENT_LIST_DIR}/src/jtag_transfer.pio)
+
 target_include_directories(rpjtag_firmware PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -29,7 +31,10 @@ target_link_libraries(rpjtag_firmware
     pico_stdlib
     pico_stdio_usb
     hardware_adc
+    hardware_clocks
+    hardware_dma
     hardware_gpio
+    hardware_pio
 )
 
 pico_enable_stdio_usb(rpjtag_firmware 1)

@@ -83,16 +83,30 @@ class RpjtagClient:
             raise ValueError("VTREF response did not contain an integer millivolt value")
         return value
 
+    def scan_idcode(self) -> int:
+        fields = self._parse_fields(self._request("IDCODE", "RPJTAG_IDCODE "))
+        value = fields.get("idcode")
+        if not isinstance(value, int):
+            raise ValueError("IDCODE response did not contain an integer IDCODE")
+        return value
+
     def set_tck(self, hz: int) -> int:
-        raise NotImplementedError(f"setting TCK to {hz} Hz is implemented in milestone M1")
+        fields = self._parse_fields(self._request(f"TCK {hz}", "RPJTAG_TCK "))
+        value = fields.get("hz")
+        if not isinstance(value, int):
+            raise ValueError("TCK response did not contain an integer frequency")
+        return value
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query an rpJTAG adapter over USB CDC")
-    parser.add_argument("command", choices=("info", "vtref"))
+    parser.add_argument("command", choices=("info", "vtref", "idcode", "tck"))
     parser.add_argument("--port", required=True, help="USB CDC serial port, e.g. /dev/cu.usbmodemXXXX")
     parser.add_argument("--timeout", type=float, default=3.0, help="response timeout in seconds")
+    parser.add_argument("--hz", type=int, help="TCK frequency for the tck command")
     arguments = parser.parse_args()
+    if arguments.command == "tck" and arguments.hz is None:
+        parser.error("tck requires --hz")
 
     try:
         import serial
@@ -103,8 +117,12 @@ def main() -> None:
         client = RpjtagClient(device)
         if arguments.command == "info":
             print(json.dumps(client.get_info(), indent=2))
-        else:
+        elif arguments.command == "vtref":
             print(f"{client.get_vtref_mv()} mV")
+        elif arguments.command == "idcode":
+            print(f"0x{client.scan_idcode():08X}")
+        else:
+            print(f"{client.set_tck(arguments.hz)} Hz")
 
 
 if __name__ == "__main__":

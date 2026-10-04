@@ -46,6 +46,18 @@ class RpjtagClientTests(unittest.TestCase):
         self.assertEqual(RpjtagClient(device).get_vtref_mv(), 1800)
         self.assertEqual(device.writes, [b"VTREF\n"])
 
+    def test_scan_idcode_parses_hex_value(self) -> None:
+        device = FakeSerialDevice([b"RPJTAG_IDCODE idcode=0x12345679\r\n"])
+
+        self.assertEqual(RpjtagClient(device).scan_idcode(), 0x12345679)
+        self.assertEqual(device.writes, [b"IDCODE\n"])
+
+    def test_set_tck_parses_applied_frequency(self) -> None:
+        device = FakeSerialDevice([b"RPJTAG_TCK hz=6000000\r\n"])
+
+        self.assertEqual(RpjtagClient(device).set_tck(6000000), 6000000)
+        self.assertEqual(device.writes, [b"TCK 6000000\n"])
+
     def test_timeout_when_firmware_does_not_respond(self) -> None:
         with self.assertRaises(TimeoutError):
             RpjtagClient(FakeSerialDevice([])).get_info()

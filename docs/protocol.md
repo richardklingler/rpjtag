@@ -38,4 +38,4 @@ The protocol is designed for pipelining and response matching by `seq`.
 
 ## M0 CDC bring-up commands
 
-Until the native vendor-class interface is implemented, the firmware accepts newline-terminated `INFO` and `VTREF` commands over USB CDC. Responses begin with `RPJTAG_INFO` or `RPJTAG_VTREF` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.
+Until the native vendor-class interface is implemented, the firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, and `IDCODE` commands over USB CDC. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, or `RPJTAG_IDCODE` and contain space-separated `key=value` fields. IDCODE shifting uses PIO and DMA; TCK is set by the PIO clock divider. This diagnostic line protocol is temporary and is not the binary native protocol described above.
