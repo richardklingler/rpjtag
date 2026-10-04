@@ -40,4 +40,4 @@ Header pin numbers below refer to the standard 40-pin Pico header, viewed from a
 - The firmware initializes GP18, GP19, GP21, and GP26. The PIO/DMA JTAG engine uses GP2-GP5; reset, SPI, UART, and power-control assignments remain reserved for later milestones.
 - GPIO23-GPIO25 and GPIO29 are used by the Pico 2 W wireless/power circuitry; leave them out of this development-board wiring.
 - For the Seeed Spartan Edge Accelerator Board, use its dedicated FPGA JTAG connector and set K5 to JTAG mode. Verify connector orientation against the board schematic before wiring; do not use the 5 V Arduino shield I/O for direct Pico connections.
-- M2 PIO/DMA bench test: the connected Spartan board returned IDCODE `0x03620093` at requested TCK settings of 1, 6, and 15 MHz. OpenOCD 0.12.0 and a CMSIS-DAP-v2-enabled openFPGALoader build both discovered the probe and detected the XC7S15 at 1 MHz.
+- M2 bench test: OpenOCD 0.12.0 returned IDCODE `0x03620093` at 1, 6, and 15 MHz. A local CMSIS-DAP-v2-enabled openFPGALoader build detects the XC7S15 at 1 MHz but fails at higher settings; SRAM bridge loading stalls before completion.

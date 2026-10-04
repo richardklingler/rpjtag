@@ -15,8 +15,8 @@
 #define JTAG_TDO_PIN 5u
 #define JTAG_MAX_SEQUENCE_BITS 64u
 #define JTAG_MAX_SEQUENCE_BYTES (JTAG_MAX_SEQUENCE_BITS / 8u)
-#define JTAG_TX_WORD_COUNT 4u
-#define JTAG_PIO_CYCLES_PER_TCK 4u
+#define JTAG_TX_WORD_COUNT 5u
+#define JTAG_PIO_CYCLES_PER_TCK 3u
 #define JTAG_MIN_TCK_HZ 10000u
 #define JTAG_MAX_TCK_HZ 30000000u
 #define JTAG_SCAN_CYCLE_COUNT 48u
@@ -161,12 +161,13 @@ static void jtag_run_cycles(uint32_t count, const uint8_t *tms_bits,
 
     memset(jtag_tx_words, 0, sizeof(jtag_tx_words));
     memset(jtag_rx_samples, 0, count * sizeof(jtag_rx_samples[0]));
+    jtag_tx_words[0] = count - 1u;
     if (tdo_bits != NULL) {
         memset(tdo_bits, 0, (count + 7u) / 8u);
     }
 
     for (uint32_t bit = 0; bit < count; ++bit) {
-        const uint32_t word_bit = bit * 2u;
+        const uint32_t word_bit = 32u + bit * 2u;
         const bool tms = ((tms_bits[bit / 8u] >> (bit % 8u)) & 1u) != 0;
         const bool tdi = tdi_bits != NULL &&
             ((tdi_bits[bit / 8u] >> (bit % 8u)) & 1u) != 0;
@@ -193,7 +194,7 @@ static void jtag_run_cycles(uint32_t count, const uint8_t *tms_bits,
     dma_channel_configure((uint)jtag_rx_dma, &rx_config, jtag_rx_samples,
                           &pio0->rxf[jtag_sm], count, false);
 
-    const uint32_t tx_word_count = (count * 2u + 31u) / 32u;
+    const uint32_t tx_word_count = 1u + (count * 2u + 31u) / 32u;
     dma_channel_config_t tx_config = dma_channel_get_default_config((uint)jtag_tx_dma);
     channel_config_set_transfer_data_size(&tx_config, DMA_SIZE_32);
     channel_config_set_read_increment(&tx_config, true);
