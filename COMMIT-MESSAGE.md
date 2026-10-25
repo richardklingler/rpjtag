@@ -22,4 +22,5 @@ Faster native intake (0x0104); the 0x0103 load times
   and the LEDs right on every load): 1.27 s at 4 MHz, 0.92-0.95 s at
   9.375 MHz, 0.99 s at 15 MHz, 0.95 s at 25 MHz (which loaded this
   time). From 9.375 MHz on the time no longer depends on TCK: about
-  580 KB/s, USB full-speed.
+  580 KB/s, USB full-speed. GateLab's Build & Program of blinky at
+  4 MHz: 1.6 s, at 10 MHz: 1.2 s (0x0103: 2.3 s, openocd: 13.9 s).
