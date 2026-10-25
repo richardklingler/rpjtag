@@ -162,6 +162,9 @@ static bool fragment_active;
 
 static uint8_t response_payload[NATIVE_RESPONSE_CAPACITY];
 static uint32_t native_received_bytes;
+/* When native bytes last arrived: the main loop doesn't sleep while a host is sending (a bitstream load). */
+static uint32_t native_last_receive_us;
+static bool native_has_received;
 static uint32_t native_frame_count;
 static uint32_t native_response_count;
 
@@ -287,7 +290,9 @@ static uint32_t active_ir_padding_after(void) {
     return bits;
 }
 
-static bool scan_register(bool instruction, uint32_t bit_count,
+/* raw: the host shifts the whole chain itself (no BYPASS padding for the other devices), e.g. a bitstream split
+ * across scans that must reach the active device without stray bits between the pieces. */
+static bool scan_register(bool instruction, bool raw, uint32_t bit_count,
                           const uint8_t *tdi, uint8_t *tdo,
                           uint8_t end_state) {
     const uint8_t shift_state = instruction ? TAP_SHIFT_IR : TAP_SHIFT_DR;
@@ -295,7 +300,8 @@ static bool scan_register(bool instruction, uint32_t bit_count,
     uint32_t active_offset = 0;
     uint32_t total_bits = bit_count;
 
-    if (native_chain_configured) {
+    const bool padded = native_chain_configured && !raw;
+    if (padded) {
         if (instruction) {
             active_offset = active_ir_padding_before();
             total_bits += active_offset + active_ir_padding_after();
@@ -316,7 +322,7 @@ static bool scan_register(bool instruction, uint32_t bit_count,
     memset(scan_tdo, 0, scan_bytes);
     memset(scan_tms, 0, scan_bytes);
 
-    if (native_chain_configured && instruction) {
+    if (padded && instruction) {
         uint32_t offset = 0;
         for (uint32_t index = 0; index < native_chain_count; ++index) {
             const uint32_t length = native_chain[index].ir_length;
@@ -573,11 +579,12 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
-        write_u16(response + 1, 0x0101);
+        write_u16(response + 1, 0x0102);
         response[3] = 0x01;
         response[4] = 0;
-        /* Bit 5: stream mode 2 (change-only with capture counts), the DR-only capture path and a 2 KB TX FIFO. */
-        write_u32(response + 5, 0x0000003fu);
+        /* Bit 5: stream mode 2 (change-only with capture counts), the DR-only capture path and a 2 KB TX FIFO.
+         * Bit 6 (0x0102): raw scans (SCAN_IR/SCAN_DR flag bit 1) and no idle sleep while native data arrives. */
+        write_u32(response + 5, 0x0000007fu);
         write_u32(response + 9, NATIVE_MAX_SCAN_BITS);
         write_u16(response + 13, NATIVE_MAX_PAYLOAD);
         write_u16(response + 15, NATIVE_RESPONSE_CAPACITY);
@@ -635,18 +642,20 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
         const uint8_t flags = payload[instruction ? 3u : 5u];
         const uint32_t scan_bytes = (bit_count + 7u) / 8u;
         if (bit_count == 0 || bit_count > NATIVE_MAX_SCAN_BITS || end_state >= 16 ||
-            (flags & ~1u) != 0 || length != header_length + scan_bytes) {
+            (flags & ~3u) != 0 || length != header_length + scan_bytes) {
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
-        if (instruction && native_chain_configured &&
+        /* Flag bit 1 (firmware 0x0102): raw, no chain padding. */
+        const bool raw = (flags & 2u) != 0;
+        if (instruction && native_chain_configured && !raw &&
             bit_count != native_chain[native_active_device].ir_length) {
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
         uint8_t captured[NATIVE_MAX_SCAN_BYTES];
         uint8_t *capture = (flags & 1u) != 0 ? captured : NULL;
-        if (!scan_register(instruction, bit_count, payload + header_length,
+        if (!scan_register(instruction, raw, bit_count, payload + header_length,
                            capture, end_state)) {
             response[0] = NATIVE_STATUS_BUFFER_OVERFLOW;
             return 1;
@@ -674,7 +683,7 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             return 1;
         }
         uint8_t captured[NATIVE_MAX_SCAN_BYTES];
-        if (!scan_register(false, bit_count, payload + 4, captured, TAP_RUN_TEST_IDLE)) {
+        if (!scan_register(false, false, bit_count, payload + 4, captured, TAP_RUN_TEST_IDLE)) {
             response[0] = NATIVE_STATUS_BUFFER_OVERFLOW;
             return 1;
         }
@@ -1270,6 +1279,8 @@ void native_protocol_task(void) {
             break;
         }
         native_received_bytes += received;
+        native_last_receive_us = time_us_32();
+        native_has_received = true;
         for (uint32_t index = 0; index < received; ++index) {
             feed_byte(input[index]);
         }
@@ -1292,4 +1303,8 @@ void native_protocol_get_stats(uint32_t *received_bytes, uint32_t *frames,
 
 bool native_protocol_is_streaming(void) {
     return native_stream_active;
+}
+
+bool native_protocol_is_busy(void) {
+    return native_has_received && time_us_32() - native_last_receive_us < 100000u;
 }

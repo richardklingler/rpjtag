@@ -171,7 +171,9 @@ int main(void) {
         poll_usb_commands();
 
         if (tud_vendor_mounted() || tud_vendor_n_mounted(1)) {
-            if (!native_protocol_is_streaming()) {
+            /* No idle sleep while a stream runs or a host is sending: TinyUSB takes one 64-byte packet per
+             * tud_task(), so a 1 ms sleep capped native intake at ~64 KB/s (an SRAM load took 11 s). */
+            if (!native_protocol_is_streaming() && !native_protocol_is_busy()) {
                 sleep_ms(1);
             }
             continue;

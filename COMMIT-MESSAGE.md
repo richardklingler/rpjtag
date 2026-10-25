@@ -1,40 +1,27 @@
 # Commit Message
 
-Faster BSR streaming: DR-only captures, counted change stream, 2 KB FIFO
+Native SRAM loads: raw scans and no idle sleep while data arrives
 
-For GateLab's live pin view (its native JTAG engine streams this BSR).
+For GateLab's native Xilinx 7-series SRAM loads over interface 1.
 
-- Stream captures after the first shift the DR only: SAMPLE stays in the
-  IR, and the RTI -> Shift-DR -> RTI sequence is built once per stream
-  and shifts only up to the farthest masked cell (leaving Shift-DR early
-  is harmless under SAMPLE/PRELOAD). Any other TAP/chain/BSR command
-  invalidates it, and the next capture takes the full IR + DR path.
-- Stream mode 2: change-only with a u32 captures-since-start field after
-  the drop count (16-byte header) and a frame without changes at least
-  every 100 ms, so a host knows the capture rate and how long each level
-  lasted. Modes 0 and 1 are unchanged.
-- Vendor TX FIFO 256 -> 2048 bytes: GateLab saw 97 dropped captures at
-  2,372 captures/s with the 256-byte FIFO (four XC7S15 frames); streaming
-  is no longer limited to BSRs of at most 1888 bits.
-- GET_INFO: firmware 0x0101, capability bit 5 (0x3f) for the above.
-- Host client: mode 2 decoding (`BsrStreamFrame.captures`); docs.
+- The main loop no longer sleeps 1 ms while native bytes arrived in
+  the last 100 ms (native_protocol_is_busy). TinyUSB takes one 64-byte
+  packet per tud_task(), so the sleep capped native intake at ~64 KB/s:
+  an XC7S15 bitstream (538,844 bytes) took 11.3-11.9 s whatever the
+  TCK. Now 3.7 s at 4 MHz, 3.1 s at 9.375 MHz, 2.9 s at 15 MHz.
+- SCAN_IR/SCAN_DR flag bit 1: raw, no BYPASS padding for the other
+  devices of a configured chain. A bitstream split across DR scans
+  (ending in Pause-DR) gets one padding bit per scan otherwise, which
+  corrupts it on a multi-device chain (the Cyclone IV + XC7S15 bench).
+  The host pads once at the start and end itself.
+- GET_INFO: firmware 0x0102, capability bit 6 (0x7f).
+- Host client: scan_dr(raw=True); docs/protocol.md.
 
 ## Verification
 
-- `python3 fw/test/test_native_protocol.py` (11, new: counted change
-  stream), `fw/test/test_host_protocol.py`, `fw/test/test_tap.py` pass.
-- Built on the MacBook Air (Arm GNU Toolchain 15.3.rel2, SDK 2.3.1,
-  build folder /tmp/rpjtag-build): no warnings from the firmware.
-- On the Spartan Edge (XC7S15, blinky) through GateLab at 4 MHz, mode 2
-  masked to led[0]/led[1]: 3,124 captures/s (full vectors: 2,375),
-  0 dropped in 30 s, a heartbeat every 100 ms, led[0] edges
-  0.6709-0.6714 s apart (2^26 / 100 MHz = 0.67109 s).
-- openocd's SRAM load through the CMSIS-DAP v2 interface went from
-  17.1 to 13.9 s, likely the bigger vendor TX buffer, which that
-  interface shares.
-
-## Build on either Mac
-
-- fw/CMakeLists.txt no longer hard-codes ~/Nextcloud/...: it takes
-  -DPICO_SDK_PATH or the environment's, else the pico-sdk next to the
-  repo (../../pico-sdk), which is where it sits on both Macs.
+- Host tests pass (test_native_protocol 12, new raw-flag test;
+  test_host_protocol; test_tap).
+- Built on the MacBook Air, flashed by the user; GateLab's opt-in load
+  spike on the Spartan Edge (XC7S15 alone) loaded button-led and blinky
+  six times with raw scans: DONE high and the LEDs right at 4, 9.375
+  and 15 MHz; at 25 MHz DONE stayed low (too fast for the wiring).

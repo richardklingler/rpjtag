@@ -30,7 +30,7 @@ All multibyte fields are little-endian. Response payloads below omit the leading
 - `SET_TCK`: request `u32 Hz`; response `u32 applied Hz`.
 - `GET_VTREF`: response `u16 millivolts`, `u16 target current mA` (zero when unavailable).
 - `TAP_GOTO`: request one TAP-state index, using the 16 states in the order listed in `rpjtag-firmware.md`.
-- `SCAN_IR`: request `u16 bits`, `u8 end state`, `u8 flags`, then `ceil(bits/8)` TDI bytes. `SCAN_DR` uses `u32 bits` before the same end-state and flags bytes. Flag bit 0 captures TDO; captured scans return `ceil(bits/8)` bytes.
+- `SCAN_IR`: request `u16 bits`, `u8 end state`, `u8 flags`, then `ceil(bits/8)` TDI bytes. `SCAN_DR` uses `u32 bits` before the same end-state and flags bytes. Flag bit 0 captures TDO; captured scans return `ceil(bits/8)` bytes. Flag bit 1 (firmware 0x0102, capability bit 6) makes the scan raw: no BYPASS padding for the other devices of a configured chain, so the host shifts the whole chain itself (a bitstream split across DR scans ending in Pause-DR reaches the active device without stray bits between the pieces; a raw SCAN_IR carries every device's IR bits).
 - `SCAN_DR_CHECK`: request `u32 bits`, then TDI, expected TDO, and mask bit vectors. Response is `u32 first mismatch bit`, or `0xffffffff` when all masked bits match; mismatch also sets status 7.
 - `RUNTEST`: request `u32 TCK cycles`, `u32 minimum microseconds`, `u8 end state`.
 - `BATCH`: repeated `u8 command`, `u16 payload length`, payload records for commands `0x10`-`0x15`. Response is repeated `u8 command`, `u16 response length`, response payload (including each subcommand's status). At most 32 commands are accepted.
@@ -71,3 +71,5 @@ USB interface 0 is a 64-byte bulk CMSIS-DAP v2 interface with the string `CMSIS-
 ## CDC bring-up commands
 
 The firmware accepts newline-terminated `INFO`, `VTREF`, `TCK <hz>`, `IDCODE`, and `NATIVE` commands over USB CDC. `NATIVE` reports received byte, parsed frame, and queued response counters for native-interface diagnosis. Responses begin with `RPJTAG_INFO`, `RPJTAG_VTREF`, `RPJTAG_TCK`, `RPJTAG_IDCODE`, or `RPJTAG_NATIVE` and contain space-separated `key=value` fields. This diagnostic line protocol is temporary and is not the binary native protocol described above.
+
+Firmware 0x0102 also skips the main loop's 1 ms idle sleep while native bytes arrived in the last 100 ms: TinyUSB takes one 64-byte packet per `tud_task()`, so the sleep capped native intake at about 64 KB/s (an XC7S15 SRAM load of 538,844 bytes took 11 s; now 3.1 s at 9.375 MHz).

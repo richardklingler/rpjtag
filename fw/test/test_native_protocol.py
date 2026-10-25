@@ -62,6 +62,15 @@ class NativeClientTests(unittest.TestCase):
         request = NativeFrame.decode(transport.writes[0])
         self.assertEqual(request.payload, struct.pack("<IBB", 8, 1, 1) + b"\x3C")
 
+    def test_raw_scan_dr_sets_flag_bit_1(self) -> None:
+        # Firmware 0x0102: a raw scan skips the chain padding (a bitstream split across scans).
+        transport = FakeBulkTransport(response_frame(0x13, 0, b""))
+        client = NativeProtocolClient(transport)
+
+        self.assertIsNone(client.scan_dr(16, b"\x3C\xA5", end_state=6, capture=False, raw=True))
+        request = NativeFrame.decode(transport.writes[0])
+        self.assertEqual(request.payload, struct.pack("<IBB", 16, 6, 2) + b"\x3C\xA5")
+
     def test_chain_detect_decodes_ids_and_ir_length(self) -> None:
         body = bytes((2,)) + struct.pack("<IIH", 0x03620093, 0, 12)
         transport = FakeBulkTransport(response_frame(0x20, 0, body))

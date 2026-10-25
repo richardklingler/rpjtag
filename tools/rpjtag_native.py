@@ -188,13 +188,14 @@ class NativeProtocolClient:
         self.request(0x11, bytes((state,)))
 
     def scan_dr(self, bit_count: int, tdi: bytes, end_state: int = 1,
-                capture: bool = True) -> bytes | None:
+                capture: bool = True, raw: bool = False) -> bytes | None:
+        """raw (firmware 0x0102): the whole chain, without the firmware's BYPASS padding."""
         if not 1 <= bit_count <= MAX_SCAN_BITS:
             raise ValueError(f"scan length must be between 1 and {MAX_SCAN_BITS} bits")
         byte_count = (bit_count + 7) // 8
         if len(tdi) != byte_count:
             raise ValueError("TDI length does not match scan bit count")
-        payload = struct.pack("<IBB", bit_count, end_state, int(capture)) + tdi
+        payload = struct.pack("<IBB", bit_count, end_state, int(capture) | (2 if raw else 0)) + tdi
         response = self.request(0x13, payload)
         if not capture:
             if response:
