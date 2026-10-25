@@ -33,6 +33,7 @@ add_executable(rpjtag_firmware
 )
 
 pico_generate_pio_header(rpjtag_firmware ${CMAKE_CURRENT_LIST_DIR}/src/jtag_transfer.pio)
+pico_generate_pio_header(rpjtag_firmware ${CMAKE_CURRENT_LIST_DIR}/src/jtag_write.pio)
 
 target_include_directories(rpjtag_firmware PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

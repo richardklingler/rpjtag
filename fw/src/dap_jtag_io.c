@@ -8,6 +8,7 @@
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "jtag_transfer.pio.h"
+#include "jtag_write.pio.h"
 
 #define JTAG_TCK_PIN 2u
 #define JTAG_TMS_PIN 3u
@@ -18,6 +19,8 @@
 #define JTAG_MAX_SEQUENCE_BYTES (JTAG_MAX_SEQUENCE_BITS / 8u)
 #define JTAG_TX_WORD_COUNT (1u + (JTAG_MAX_SEQUENCE_BITS * 2u + 31u) / 32u)
 #define JTAG_PIO_CYCLES_PER_TCK 3u
+#define JTAG_WRITE_CYCLES_PER_TCK 2u
+#define JTAG_WRITE_MAX_WORDS (4096u / 32u)
 #define JTAG_MIN_TCK_HZ 10000u
 #define JTAG_MAX_TCK_HZ 30000000u
 #define JTAG_SCAN_CYCLE_COUNT 48u
@@ -29,6 +32,9 @@ static int jtag_tx_dma;
 static int jtag_rx_dma;
 static bool jtag_initialized;
 static pio_sm_config jtag_config;
+static uint jtag_write_offset;
+static pio_sm_config jtag_write_config;
+static uint32_t jtag_write_words[JTAG_WRITE_MAX_WORDS];
 static uint32_t jtag_tx_words[JTAG_TX_WORD_COUNT];
 static uint32_t jtag_rx_samples[JTAG_MAX_SEQUENCE_BITS];
 
@@ -80,6 +86,11 @@ void dap_jtag_init(void) {
     sm_config_set_in_pins(&jtag_config, JTAG_TDO_PIN);
     sm_config_set_out_shift(&jtag_config, true, true, 32);
     sm_config_set_in_shift(&jtag_config, false, true, 1);
+    jtag_write_offset = pio_add_program(pio0, &jtag_write_program);
+    jtag_write_config = jtag_write_program_get_default_config(jtag_write_offset);
+    sm_config_set_sideset_pins(&jtag_write_config, JTAG_TCK_PIN);
+    sm_config_set_out_pins(&jtag_write_config, JTAG_TDI_PIN, 1);
+    sm_config_set_out_shift(&jtag_write_config, true, true, 32);
     jtag_tx_dma = dma_claim_unused_channel(true);
     jtag_rx_dma = dma_claim_unused_channel(true);
     jtag_initialized = true;
@@ -221,6 +232,46 @@ static void jtag_run_cycles(uint32_t count, const uint8_t *tms_bits,
             }
         }
     }
+}
+
+void dap_jtag_write_stream(const uint8_t *tdi, uint32_t bits) {
+    const uint32_t words = bits / 32u;
+    if (words == 0 || words > JTAG_WRITE_MAX_WORDS) {
+        return;
+    }
+    /* The payload sits at an unaligned offset in the frame; DMA reads whole words. */
+    memcpy(jtag_write_words, tdi, words * 4u);
+
+    pio_sm_set_enabled(pio0, jtag_sm, false);
+    pio_sm_init(pio0, jtag_sm, jtag_write_offset, &jtag_write_config);
+    pio_sm_set_clkdiv(pio0, jtag_sm,
+                      (float)clock_get_hz(clk_sys) /
+                      ((float)JTAG_WRITE_CYCLES_PER_TCK * (float)jtag_requested_tck_hz()));
+
+    dma_channel_config_t tx_config = dma_channel_get_default_config((uint)jtag_tx_dma);
+    channel_config_set_transfer_data_size(&tx_config, DMA_SIZE_32);
+    channel_config_set_read_increment(&tx_config, true);
+    channel_config_set_write_increment(&tx_config, false);
+    channel_config_set_dreq(&tx_config, pio_get_dreq(pio0, jtag_sm, true));
+    dma_channel_configure((uint)jtag_tx_dma, &tx_config, &pio0->txf[jtag_sm],
+                          jtag_write_words, words, false);
+    pio_sm_set_enabled(pio0, jtag_sm, true);
+    dma_start_channel_mask(1u << (uint)jtag_tx_dma);
+    dma_channel_wait_for_finish_blocking((uint)jtag_tx_dma);
+
+    /* The last word is clocked out once the FIFO is empty and the program stalls on its next pull (TCK low). The
+     * stall flag stays set while it waits, so clearing it after the FIFO ran empty can't miss it. */
+    while (!pio_sm_is_tx_fifo_empty(pio0, jtag_sm)) {
+        tight_loop_contents();
+    }
+    const uint32_t stall = 1u << (PIO_FDEBUG_TXSTALL_LSB + jtag_sm);
+    pio0->fdebug = stall;
+    while ((pio0->fdebug & stall) == 0) {
+        tight_loop_contents();
+    }
+    pio_sm_set_enabled(pio0, jtag_sm, false);
+    /* Back to the transfer program (it resets TMS/TDI low, which is Shift's TMS anyway). */
+    jtag_configure_pio_pins();
 }
 
 static void jtag_run_constant_tms(uint32_t count, bool tms, const uint8_t *tdi,

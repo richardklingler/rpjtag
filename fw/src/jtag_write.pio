@@ -1,0 +1,10 @@
+; Write-only JTAG shift for long DR scans (an FPGA bitstream): TDI only, TMS held at its last level (low in
+; Shift-DR), nothing sampled. Two instructions per TCK; TCK is side-set. The TX FIFO is fed by DMA with whole
+; 32-bit words (autopull, shift right: bit 0 of byte 0 first). With the FIFO empty the `out` stalls with TCK low.
+.program jtag_write
+.side_set 1
+
+.wrap_target
+    out pins, 1 side 0
+    nop         side 1
+.wrap

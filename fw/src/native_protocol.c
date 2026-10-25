@@ -314,6 +314,22 @@ static bool scan_register(bool instruction, bool raw, uint32_t bit_count,
         return false;
     }
 
+    /* Firmware 0x0103: a long write-only DR scan with nothing to pad (a bitstream piece) shifts through the write
+     * program — whole 32-bit words by DMA, then the rest and the last bit (TMS high) the usual way. */
+    if (!instruction && tdo == NULL && total_bits == bit_count && bit_count > 64u) {
+        if (!tap_goto(shift_state)) {
+            return false;
+        }
+        const uint32_t streamed = (bit_count - 1u) & ~31u;
+        dap_jtag_write_stream(tdi, streamed);
+        const uint32_t rest = bit_count - streamed;
+        uint8_t rest_tms[5] = {0};
+        set_bit(rest_tms, rest - 1u, true);
+        dap_jtag_sequence_bits(rest, rest_tms, tdi + streamed / 8u, NULL);
+        native_tap_state = exit_state;
+        return tap_goto(end_state);
+    }
+
     static uint8_t scan_tdi[NATIVE_MAX_SCAN_BYTES];
     static uint8_t scan_tdo[NATIVE_MAX_SCAN_BYTES];
     static uint8_t scan_tms[NATIVE_MAX_SCAN_BYTES];
@@ -579,12 +595,13 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
-        write_u16(response + 1, 0x0102);
+        write_u16(response + 1, 0x0103);
         response[3] = 0x01;
         response[4] = 0;
         /* Bit 5: stream mode 2 (change-only with capture counts), the DR-only capture path and a 2 KB TX FIFO.
-         * Bit 6 (0x0102): raw scans (SCAN_IR/SCAN_DR flag bit 1) and no idle sleep while native data arrives. */
-        write_u32(response + 5, 0x0000007fu);
+         * Bit 6 (0x0102): raw scans (SCAN_IR/SCAN_DR flag bit 1) and no idle sleep while native data arrives.
+         * Bit 7 (0x0103): long write-only DR scans through a write-only PIO program. */
+        write_u32(response + 5, 0x000000ffu);
         write_u32(response + 9, NATIVE_MAX_SCAN_BITS);
         write_u16(response + 13, NATIVE_MAX_PAYLOAD);
         write_u16(response + 15, NATIVE_RESPONSE_CAPACITY);

@@ -1,27 +1,28 @@
 # Commit Message
 
-Native SRAM loads: raw scans and no idle sleep while data arrives
+Fast write-only DR shifts through a second PIO program
 
-For GateLab's native Xilinx 7-series SRAM loads over interface 1.
+For GateLab's native Xilinx 7-series SRAM loads: the CPU work around
+each 4,096-bit piece (bit-by-bit copying and packing, a PIO restart
+and DMA set-up per 512 bits, one RX word per bit even without capture)
+cost about 2.5-2.8 ms per piece, so a 538,844-byte XC7S15 bitstream
+took 4.0 s at 4 MHz and 2.9 s at 15 MHz.
 
-- The main loop no longer sleeps 1 ms while native bytes arrived in
-  the last 100 ms (native_protocol_is_busy). TinyUSB takes one 64-byte
-  packet per tud_task(), so the sleep capped native intake at ~64 KB/s:
-  an XC7S15 bitstream (538,844 bytes) took 11.3-11.9 s whatever the
-  TCK. Now 3.7 s at 4 MHz, 3.1 s at 9.375 MHz, 2.9 s at 15 MHz.
-- SCAN_IR/SCAN_DR flag bit 1: raw, no BYPASS padding for the other
-  devices of a configured chain. A bitstream split across DR scans
-  (ending in Pause-DR) gets one padding bit per scan otherwise, which
-  corrupts it on a multi-device chain (the Cyclone IV + XC7S15 bench).
-  The host pads once at the start and end itself.
-- GET_INFO: firmware 0x0102, capability bit 6 (0x7f).
-- Host client: scan_dr(raw=True); docs/protocol.md.
+- fw/src/jtag_write.pio: TDI only, TCK on side-set, two PIO cycles per
+  TCK, autopull of 32-bit words (bit 0 of byte 0 first); TMS keeps its
+  level (low in Shift-DR); the out stalls with TCK low when the FIFO
+  is empty.
+- dap_jtag_write_stream(): copies whole words to an aligned buffer,
+  DMAs them into the TX FIFO, waits for the FIFO to empty and the
+  program to stall, then switches back to the transfer program.
+- scan_register(): a DR scan without TDO capture and without padding
+  (raw, or a one-device chain), longer than 64 bits, streams its whole
+  words that way; the rest and the last bit (TMS high) take the usual
+  path. Every other scan is unchanged.
+- GET_INFO: firmware 0x0103, capability bit 7 (0xff); docs.
 
 ## Verification
 
-- Host tests pass (test_native_protocol 12, new raw-flag test;
-  test_host_protocol; test_tap).
-- Built on the MacBook Air, flashed by the user; GateLab's opt-in load
-  spike on the Spartan Edge (XC7S15 alone) loaded button-led and blinky
-  six times with raw scans: DONE high and the LEDs right at 4, 9.375
-  and 15 MHz; at 25 MHz DONE stayed low (too fast for the wiring).
+- Host tests pass; built on the MacBook Air with no firmware warnings.
+- To measure on the Spartan Edge after flashing: GateLab's opt-in load
+  spike (DONE and the LEDs after each load, times at 4, 9.375, 15 MHz).
