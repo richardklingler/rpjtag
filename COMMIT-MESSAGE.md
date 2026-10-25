@@ -1,32 +1,40 @@
 # Commit Message
 
-Add native BSR sampling and streaming
+Faster BSR streaming: DR-only captures, counted change stream, 2 KB FIFO
 
-- Implement BSR_STREAM_START/STOP with full-vector and change-only modes, optional masks, timestamps, and dropped-capture accounting.
-- Add host frame parsing/queueing and tests for unsolicited stream frames and deltas.
-- Combine BSR TAP navigation, SAMPLE IR, and capture DR into one bounded JTAG sequence to reduce PIO/DMA setup overhead.
-- Increase internal PIO/DMA sequence batches to 512 clocks while preserving the CMSIS-DAP 64-clock sequence limit.
-- Add read-only BSR_CONFIG and BSR_SAMPLE commands using per-device BSDL metadata; do not select EXTEST.
-- Add PyUSB BSR helpers/tests and document the XC7S15 FTGB196's 339-bit BSR and instruction opcodes.
-- Add a second vendor bulk interface for the native protocol while preserving CMSIS-DAP on interface 0 and moving CDC to interfaces 2/3.
-- Implement bounded little-endian framing, USB-stream reassembly, GET_INFO, SET_TCK, GET_VTREF, TAP reset/goto, IR/DR scans, scan checks, RUNTEST, BATCH, and chain detect/configuration.
-- Add arbitrary-length bit-packed PIO/DMA sequences, split into safe 64-cycle chunks, and automatic BYPASS padding for configured chains.
-- Add a PyUSB client, framing/command tests, payload documentation, native-interface usage examples, and CDC counters for native receive/frame/response diagnosis.
+For GateLab's live pin view (its native JTAG engine streams this BSR).
+
+- Stream captures after the first shift the DR only: SAMPLE stays in the
+  IR, and the RTI -> Shift-DR -> RTI sequence is built once per stream
+  and shifts only up to the farthest masked cell (leaving Shift-DR early
+  is harmless under SAMPLE/PRELOAD). Any other TAP/chain/BSR command
+  invalidates it, and the next capture takes the full IR + DR path.
+- Stream mode 2: change-only with a u32 captures-since-start field after
+  the drop count (16-byte header) and a frame without changes at least
+  every 100 ms, so a host knows the capture rate and how long each level
+  lasted. Modes 0 and 1 are unchanged.
+- Vendor TX FIFO 256 -> 2048 bytes: GateLab saw 97 dropped captures at
+  2,372 captures/s with the 256-byte FIFO (four XC7S15 frames); streaming
+  is no longer limited to BSRs of at most 1888 bits.
+- GET_INFO: firmware 0x0101, capability bit 5 (0x3f) for the above.
+- Host client: mode 2 decoding (`BsrStreamFrame.captures`); docs.
 
 ## Verification
 
-- Pico 2 W firmware builds successfully with the configured Pico SDK, ARM toolchain, and pinned CMSIS-DAP source.
-- `python3 fw/test/test_tap.py`, `python3 fw/test/test_host_protocol.py`, and `python3 fw/test/test_native_protocol.py` pass (10 native protocol tests).
-- `git diff --check` passes and workspace diagnostics report no errors in the changed C/Python sources.
-- Live BSR_SAMPLE was validated on the XC7S15: BSR_CONFIG with SAMPLE/PRELOAD `0x01`, EXTEST `0x26`, and BYPASS `0x3f` returned 43 captured bytes.
-- The blinky on IO_L4N_T0_D05_14 (ball A13, BSR input cell 308) toggled every approximately 0.5 seconds during 1,616 read-only captures in 3.001 seconds (about 538 captures/s).
-- Live change-only streaming reported cell 308 transitions at approximately 0.5-second intervals with zero drops. A 60-second masked run delivered 122 frames including 121 transitions with zero drops.
-- Before the combined-scan optimization, full-vector mode delivered 3,437 frames in 3.000 seconds (1,145.5 frames/s) at 1 MHz with one dropped capture; at an applied 9.375 MHz it delivered 5,515 frames in 3.001 seconds (1,838 frames/s) with 10 drops.
-- The combined-scan firmware delivered 1,327.3 full vectors/s at 1 MHz with six observed A13 transitions and 18 drops in three seconds. The 512-clock batching build compiles and all host tests pass; its hardware rate and the one-hour no-loss run await reflashing the newest UF2.
-- The reflashed diagnostic image enumerates native USB correctly; GET_INFO succeeds with `rx_bytes=8`, `frames=1`, and `responses=1`. CDC and CMSIS-DAP remain functional.
-- Correcting the TAP reset transition yields native DR bytes `93006203`; CHAIN_DETECT reports the XC7S15 IDCODE `0x03620093` and aggregate IR length 6.
-- CHAIN_CONFIG succeeds for the detected single-device chain, configured DR capture still returns `93006203`, and a TAP_RESET+RUNTEST BATCH returns success for both commands.
-- With the Cyclone IV and Spartan-7 connected, CHAIN_DETECT reports IDs `0x020F20DD` and `0x03620093` with 16 aggregate IR bits. Selecting the Spartan-7 IDCODE instruction automatically places the Cyclone IV in BYPASS; the active-device DR scan returns `0x03620093`.
-- OpenOCD continues to scan the Spartan-7 IDCODE `0x03620093`.
-- Existing M2 hardware results remain valid: OpenOCD scanned Spartan-7 IDCODE `0x03620093` at 1/6/15 MHz, and the supplied XC7S15 bitstream loaded into SRAM at those rates. No flash write was performed.
-- Windows WinUSB binding and independent logic-analyzer TCK measurement remain unverified.
+- `python3 fw/test/test_native_protocol.py` (11, new: counted change
+  stream), `fw/test/test_host_protocol.py`, `fw/test/test_tap.py` pass.
+- Built on the MacBook Air (Arm GNU Toolchain 15.3.rel2, SDK 2.3.1,
+  build folder /tmp/rpjtag-build): no warnings from the firmware.
+- On the Spartan Edge (XC7S15, blinky) through GateLab at 4 MHz, mode 2
+  masked to led[0]/led[1]: 3,124 captures/s (full vectors: 2,375),
+  0 dropped in 30 s, a heartbeat every 100 ms, led[0] edges
+  0.6709-0.6714 s apart (2^26 / 100 MHz = 0.67109 s).
+- openocd's SRAM load through the CMSIS-DAP v2 interface went from
+  17.1 to 13.9 s, likely the bigger vendor TX buffer, which that
+  interface shares.
+
+## Build on either Mac
+
+- fw/CMakeLists.txt no longer hard-codes ~/Nextcloud/...: it takes
+  -DPICO_SDK_PATH or the environment's, else the pico-sdk next to the
+  repo (../../pico-sdk), which is where it sits on both Macs.

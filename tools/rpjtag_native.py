@@ -61,6 +61,8 @@ class BsrStreamFrame:
     dropped_captures: int
     full_vector: bytes | None
     changes: dict[int, bool]
+    # Mode 2 only: captures since the stream started (firmware 0x0101, capability bit 5).
+    captures: int | None = None
 
 
 class NativeProtocolClient:
@@ -70,6 +72,7 @@ class NativeProtocolClient:
         self._sequence = 0
         self._read_buffer = bytearray()
         self._bsr_bit_count: int | None = None
+        self._stream_mode = 0
         self._pending_stream_frames: deque[BsrStreamFrame] = deque(maxlen=256)
 
     def _read_exact(self, length: int) -> bytes:
@@ -90,19 +93,21 @@ class NativeProtocolClient:
         return NativeFrame(cmd, seq, flags, self._read_exact(payload_length))
 
     @staticmethod
-    def _decode_bsr_stream(frame: NativeFrame, bit_count: int) -> BsrStreamFrame:
-        if frame.cmd != 0x32 or frame.flags != 0 or len(frame.payload) < 12:
+    def _decode_bsr_stream(frame: NativeFrame, bit_count: int, mode: int = 0) -> BsrStreamFrame:
+        header = 16 if mode == 2 else 12
+        if frame.cmd != 0x32 or frame.flags != 0 or len(frame.payload) < header:
             raise ValueError("invalid BSR stream frame")
         timestamp_low, timestamp_high, change_count, dropped = struct.unpack_from(
             "<IHHI", frame.payload
         )
-        data = frame.payload[12:]
+        captures = struct.unpack_from("<I", frame.payload, 12)[0] if mode == 2 else None
+        data = frame.payload[header:]
         timestamp = timestamp_low | (timestamp_high << 32)
         if change_count == 0xFFFF:
             expected_length = (bit_count + 7) // 8
             if len(data) != expected_length:
                 raise ValueError("full BSR stream vector has an invalid length")
-            return BsrStreamFrame(timestamp, dropped, data, {})
+            return BsrStreamFrame(timestamp, dropped, data, {}, captures)
         if len(data) != 2 * change_count:
             raise ValueError("BSR stream delta count does not match payload length")
         changes: dict[int, bool] = {}
@@ -112,7 +117,7 @@ class NativeProtocolClient:
             if bit >= bit_count:
                 raise ValueError("BSR stream delta index is out of range")
             changes[bit] = bool(encoded & 0x8000)
-        return BsrStreamFrame(timestamp, dropped, None, changes)
+        return BsrStreamFrame(timestamp, dropped, None, changes, captures)
 
     def request(self, cmd: int, payload: bytes = b"") -> bytes:
         sequence = self._sequence
@@ -132,7 +137,7 @@ class NativeProtocolClient:
                 if self._bsr_bit_count is None:
                     raise ValueError("received a BSR stream frame before BSR configuration")
                 self._pending_stream_frames.append(
-                    self._decode_bsr_stream(response, self._bsr_bit_count)
+                    self._decode_bsr_stream(response, self._bsr_bit_count, self._stream_mode)
                 )
                 continue
             if not is_matching_response or response.flags != 0:
@@ -253,7 +258,7 @@ class NativeProtocolClient:
                          mask: bytes | None = None) -> None:
         if self._bsr_bit_count is None:
             raise RuntimeError("configure the BSR before starting a stream")
-        if not 0 <= interval_us <= 0xFFFFFFFF or mode not in (0, 1):
+        if not 0 <= interval_us <= 0xFFFFFFFF or mode not in (0, 1, 2):
             raise ValueError("stream interval or mode is out of range")
         byte_count = (self._bsr_bit_count + 7) // 8
         if mask is not None and len(mask) != byte_count:
@@ -261,6 +266,7 @@ class NativeProtocolClient:
         payload = struct.pack("<IB", interval_us, mode)
         if mask is not None:
             payload += mask
+        self._stream_mode = mode
         self.request(0x32, payload)
 
     def bsr_stream_stop(self) -> None:
@@ -278,7 +284,7 @@ class NativeProtocolClient:
             frame = self._read_frame()
         finally:
             self.timeout_ms = previous_timeout
-        return self._decode_bsr_stream(frame, self._bsr_bit_count)
+        return self._decode_bsr_stream(frame, self._bsr_bit_count, self._stream_mode)
 
 
 class PyUsbBulkTransport:

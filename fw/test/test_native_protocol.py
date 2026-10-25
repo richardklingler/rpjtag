@@ -128,6 +128,23 @@ class NativeClientTests(unittest.TestCase):
         self.assertEqual(frame.changes, {2: False, 5: True})
         self.assertEqual(frame.dropped_captures, 7)
 
+    def test_counted_change_stream_decodes_captures(self) -> None:
+        # Mode 2 (firmware 0x0101): u32 captures since the start after the drop count.
+        delta = struct.pack("<H", 0x8005)
+        payload = struct.pack("<IHHII", 10, 0, 1, 0, 4321) + delta
+        heartbeat = struct.pack("<IHHII", 100010, 0, 0, 0, 4555)
+        client = NativeProtocolClient(FakeBulkTransport(
+            NativeFrame(0x32, 1, 0, payload).encode() + NativeFrame(0x32, 2, 0, heartbeat).encode()))
+        client._bsr_bit_count = 16
+        client._stream_mode = 2
+
+        frame = client.read_bsr_stream()
+        self.assertEqual(frame.changes, {5: True})
+        self.assertEqual(frame.captures, 4321)
+        beat = client.read_bsr_stream()
+        self.assertEqual(beat.changes, {})
+        self.assertEqual(beat.captures, 4555)
+
     def test_nonzero_status_raises_protocol_error(self) -> None:
         transport = FakeBulkTransport(response_frame(0x10, 0, b"", status=6))
 

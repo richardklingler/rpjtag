@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.14)
 
 set(PICO_BOARD pico2_w)
-set(PICO_SDK_PATH "/Users/klingler/Nextcloud/Develop/Pico/pico-sdk")
+# The SDK next to this repo (~/Nextcloud/Develop/Pico on one Mac, ~/Cloud/Develop/Pico on the other), unless
+# -DPICO_SDK_PATH or the environment names another.
+if(NOT PICO_SDK_PATH)
+    if(DEFINED ENV{PICO_SDK_PATH})
+        set(PICO_SDK_PATH "$ENV{PICO_SDK_PATH}")
+    else()
+        get_filename_component(PICO_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/../../pico-sdk" ABSOLUTE)
+    endif()
+endif()
 
 include("${PICO_SDK_PATH}/pico_sdk_init.cmake")
 

@@ -130,6 +130,19 @@ static uint32_t native_stream_dropped;
 static uint8_t native_stream_sequence;
 static bool native_stream_has_baseline;
 static bool native_stream_needs_full;
+/* Mode 2 (change-only with capture counts) and the fast capture path. */
+static uint32_t native_stream_captures;
+static uint64_t native_stream_last_sent_us;
+/* The DR-only capture, built once per stream: SAMPLE stays in the IR between captures, so after the first
+ * capture each one is RTI -> Shift-DR -> the bits up to the farthest masked cell -> RTI. Cleared by any other
+ * command that moves the TAP. */
+static bool native_stream_fast_ready;
+static uint32_t native_stream_fast_bits;
+static uint32_t native_stream_fast_dr_start;
+static uint32_t native_stream_fast_shift;
+static uint8_t native_stream_fast_tms[NATIVE_MAX_SCAN_BYTES];
+static uint8_t native_stream_fast_tdi[NATIVE_MAX_SCAN_BYTES];
+static uint8_t native_stream_fast_tdo[NATIVE_MAX_SCAN_BYTES];
 
 static uint8_t frame_header[NATIVE_HEADER_SIZE];
 static uint8_t frame_payload[NATIVE_MAX_PAYLOAD];
@@ -560,10 +573,11 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
-        write_u16(response + 1, 0x0100);
+        write_u16(response + 1, 0x0101);
         response[3] = 0x01;
         response[4] = 0;
-        write_u32(response + 5, 0x0000001fu);
+        /* Bit 5: stream mode 2 (change-only with capture counts), the DR-only capture path and a 2 KB TX FIFO. */
+        write_u32(response + 5, 0x0000003fu);
         write_u32(response + 9, NATIVE_MAX_SCAN_BITS);
         write_u16(response + 13, NATIVE_MAX_PAYLOAD);
         write_u16(response + 15, NATIVE_RESPONSE_CAPACITY);
@@ -846,8 +860,8 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             return 1;
         }
         const uint32_t mask_bytes = (native_bsr_length + 7u) / 8u;
-        if ((length != 5 && length != 5u + mask_bytes) || payload[4] > 1 ||
-            NATIVE_HEADER_SIZE + 12u + mask_bytes > CFG_TUD_VENDOR_TX_BUFSIZE) {
+        if ((length != 5 && length != 5u + mask_bytes) || payload[4] > 2 ||
+            NATIVE_HEADER_SIZE + 16u + mask_bytes > CFG_TUD_VENDOR_TX_BUFSIZE) {
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
@@ -863,6 +877,9 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
         native_stream_sequence = 0;
         native_stream_has_baseline = false;
         native_stream_needs_full = true;
+        native_stream_captures = 0;
+        native_stream_last_sent_us = 0;
+        native_stream_fast_ready = false;
         memset(native_stream_previous, 0, mask_bytes);
         return 1;
     }
@@ -912,6 +929,10 @@ static void send_response(uint8_t cmd, uint8_t seq, const uint8_t *payload,
 
 static void handle_message(uint8_t cmd, uint8_t seq, uint16_t flags,
                            const uint8_t *payload, uint32_t length) {
+    /* Any command that moves the TAP or changes the chain or IR invalidates the stream's DR-only capture. */
+    if (cmd >= NATIVE_CMD_TAP_RESET && cmd <= NATIVE_CMD_BSR_SAMPLE) {
+        native_stream_fast_ready = false;
+    }
     const uint32_t response_length = dispatch_command(
         cmd, payload, length, response_payload,
         sizeof(response_payload), true);
@@ -986,9 +1007,11 @@ static bool send_bsr_stream_frame(uint16_t change_count,
     const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
     const bool full_vector = change_count == NATIVE_STREAM_FULL_VECTOR;
     const uint32_t data_length = full_vector ? bsr_bytes : 2u * change_count;
-    const uint32_t payload_length = 12u + data_length;
+    /* Mode 2 adds u32 captures-since-start after the drop count. */
+    const uint32_t header_length = native_stream_mode == 2 ? 16u : 12u;
+    const uint32_t payload_length = header_length + data_length;
     const uint32_t frame_length = NATIVE_HEADER_SIZE + payload_length;
-    uint8_t frame[NATIVE_HEADER_SIZE + 12u + NATIVE_MAX_SCAN_BYTES];
+    uint8_t frame[NATIVE_HEADER_SIZE + 16u + NATIVE_MAX_SCAN_BYTES];
 
     frame[0] = NATIVE_CMD_BSR_STREAM_START;
     frame[1] = native_stream_sequence++;
@@ -998,11 +1021,14 @@ static bool send_bsr_stream_frame(uint16_t change_count,
     write_u16(frame + NATIVE_HEADER_SIZE + 4, (uint16_t)(timestamp_us >> 32));
     write_u16(frame + NATIVE_HEADER_SIZE + 6, change_count);
     write_u32(frame + NATIVE_HEADER_SIZE + 8, native_stream_dropped);
+    if (header_length == 16u) {
+        write_u32(frame + NATIVE_HEADER_SIZE + 12, native_stream_captures);
+    }
     if (full_vector) {
-        memcpy(frame + NATIVE_HEADER_SIZE + 12, vector, bsr_bytes);
+        memcpy(frame + NATIVE_HEADER_SIZE + header_length, vector, bsr_bytes);
     } else {
         for (uint32_t index = 0; index < change_count; ++index) {
-            write_u16(frame + NATIVE_HEADER_SIZE + 12u + 2u * index,
+            write_u16(frame + NATIVE_HEADER_SIZE + header_length + 2u * index,
                       changes[index]);
         }
     }
@@ -1020,6 +1046,66 @@ static bool send_bsr_stream_frame(uint16_t change_count,
         return false;
     }
     tud_vendor_n_write_flush(NATIVE_INTERFACE);
+    native_stream_last_sent_us = timestamp_us;
+    return true;
+}
+
+/* Builds the DR-only capture for the stream: from Run-Test/Idle with SAMPLE already in the IR, shift the
+ * active device's register only up to the farthest masked cell (cells leave TDO first; leaving Shift-DR early
+ * is harmless under SAMPLE/PRELOAD: the update latches don't drive pins), then back to Run-Test/Idle. */
+static bool build_fast_capture(void) {
+    uint32_t last = 0;
+    bool any = false;
+    for (uint32_t bit = 0; bit < native_bsr_length; ++bit) {
+        if (get_bit(native_stream_mask, bit)) {
+            last = bit;
+            any = true;
+        }
+    }
+    if (!any) {
+        return false;
+    }
+    const uint32_t shift = native_active_device + last + 1u;
+    memset(native_stream_fast_tms, 0, sizeof(native_stream_fast_tms));
+    memset(native_stream_fast_tdi, 0, sizeof(native_stream_fast_tdi));
+    uint32_t total = 0;
+    if (!tap_append_path(TAP_RUN_TEST_IDLE, TAP_SHIFT_DR, native_stream_fast_tms, &total)) {
+        return false;
+    }
+    native_stream_fast_dr_start = total;
+    /* Like capture_bsr: ones into the BYPASS bits of the devices before the active one, zeros into its cells. */
+    for (uint32_t bit = 0; bit < native_active_device; ++bit) {
+        set_bit(native_stream_fast_tdi, total + bit, true);
+    }
+    total += shift;
+    set_bit(native_stream_fast_tms, total - 1u, true);
+    if (!tap_append_path(TAP_EXIT1_DR, TAP_RUN_TEST_IDLE, native_stream_fast_tms, &total) ||
+        total > NATIVE_MAX_SCAN_BITS) {
+        return false;
+    }
+    native_stream_fast_bits = total;
+    native_stream_fast_shift = shift;
+    return true;
+}
+
+/* One capture for the stream: the full path (IR + DR) the first time, the DR-only path after that. */
+static bool capture_stream_bsr(uint8_t *captured) {
+    if (!native_stream_fast_ready || native_tap_state != TAP_RUN_TEST_IDLE) {
+        if (!capture_bsr(captured)) {
+            return false;
+        }
+        native_stream_fast_ready = build_fast_capture();
+        return true;
+    }
+    dap_jtag_sequence_bits(native_stream_fast_bits, native_stream_fast_tms,
+                           native_stream_fast_tdi, native_stream_fast_tdo);
+    const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
+    memset(captured, 0, bsr_bytes);
+    const uint32_t start = native_stream_fast_dr_start + native_active_device;
+    const uint32_t cells = native_stream_fast_shift - native_active_device;
+    for (uint32_t bit = 0; bit < cells; ++bit) {
+        set_bit(captured, bit, get_bit(native_stream_fast_tdo, start + bit));
+    }
     return true;
 }
 
@@ -1046,11 +1132,12 @@ static void poll_bsr_stream(void) {
 
     static uint8_t captured[NATIVE_MAX_SCAN_BYTES];
     const uint32_t bsr_bytes = (native_bsr_length + 7u) / 8u;
-    if (!capture_bsr(captured)) {
+    if (!capture_stream_bsr(captured)) {
         ++native_stream_dropped;
         native_stream_needs_full = true;
         return;
     }
+    ++native_stream_captures;
     for (uint32_t index = 0; index < bsr_bytes; ++index) {
         captured[index] &= native_stream_mask[index];
     }
@@ -1091,6 +1178,9 @@ static void poll_bsr_stream(void) {
     memcpy(native_stream_previous, captured, bsr_bytes);
     if (change_count != 0) {
         send_bsr_stream_frame((uint16_t)change_count, NULL, changes, timestamp_us);
+    } else if (native_stream_mode == 2 && timestamp_us - native_stream_last_sent_us >= 100000u) {
+        /* A heartbeat every 100 ms without changes: the host's capture count and time stay current. */
+        send_bsr_stream_frame(0, NULL, changes, timestamp_us);
     }
 }
 
