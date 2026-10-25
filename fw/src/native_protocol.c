@@ -595,7 +595,7 @@ static uint32_t dispatch_command(uint8_t cmd, const uint8_t *payload,
             response[0] = NATIVE_STATUS_BAD_LEN;
             return 1;
         }
-        write_u16(response + 1, 0x0103);
+        write_u16(response + 1, 0x0104);
         response[3] = 0x01;
         response[4] = 0;
         /* Bit 5: stream mode 2 (change-only with capture counts), the DR-only capture path and a 2 KB TX FIFO.
@@ -1288,8 +1288,16 @@ void native_protocol_init(void) {
 }
 
 void native_protocol_task(void) {
-    uint8_t input[64];
-    while (tud_vendor_n_available(NATIVE_INTERFACE) != 0) {
+    uint8_t input[512];
+    for (;;) {
+        /* TinyUSB moves one 64-byte packet into the FIFO per tud_task(): when it runs empty, take the next packet here
+         * instead of going round the main loop (firmware 0x0104). */
+        if (tud_vendor_n_available(NATIVE_INTERFACE) == 0) {
+            tud_task();
+            if (tud_vendor_n_available(NATIVE_INTERFACE) == 0) {
+                break;
+            }
+        }
         const uint32_t received = tud_vendor_n_read(
             NATIVE_INTERFACE, input, sizeof(input));
         if (received == 0) {

@@ -9,6 +9,7 @@
 #include "hardware/pio.h"
 #include "jtag_transfer.pio.h"
 #include "jtag_write.pio.h"
+#include "tusb.h"
 
 #define JTAG_TCK_PIN 2u
 #define JTAG_TMS_PIN 3u
@@ -257,7 +258,10 @@ void dap_jtag_write_stream(const uint8_t *tdi, uint32_t bits) {
                           jtag_write_words, words, false);
     pio_sm_set_enabled(pio0, jtag_sm, true);
     dma_start_channel_mask(1u << (uint)jtag_tx_dma);
-    dma_channel_wait_for_finish_blocking((uint)jtag_tx_dma);
+    /* USB keeps receiving the next frames while the PIO shifts (firmware 0x0104). */
+    while (dma_channel_is_busy((uint)jtag_tx_dma)) {
+        tud_task();
+    }
 
     /* The last word is clocked out once the FIFO is empty and the program stalls on its next pull (TCK low). The
      * stall flag stays set while it waits, so clearing it after the FIFO ran empty can't miss it. */

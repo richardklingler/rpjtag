@@ -16,7 +16,8 @@
 #define CFG_TUD_CDC_EP_BUFSIZE 64
 #define CFG_TUD_VENDOR 2
 #define CFG_TUD_VENDOR_EPSIZE 64
-#define CFG_TUD_VENDOR_RX_BUFSIZE 256
+/* 4 KB (firmware 0x0104): several native frames wait here while the PIO shifts a bitstream piece. */
+#define CFG_TUD_VENDOR_RX_BUFSIZE 4096
 // 2 KB: a stream frame of the longest boundary register (4,096 bits) fits, and a short host stall
 // doesn't drop captures (256 bytes held four XC7S15 frames; GateLab saw 97 drops at 2,372/s).
 #define CFG_TUD_VENDOR_TX_BUFSIZE 2048
