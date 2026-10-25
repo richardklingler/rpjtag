@@ -18,4 +18,8 @@ Faster native intake (0x0104); the 0x0103 load times
 ## Verification
 
 - Host tests pass; built on the MacBook Air with no firmware warnings.
-- To measure on the Spartan Edge after flashing: GateLab's load spike.
+- Flashed by the user; GateLab's load spike on the Spartan Edge (DONE
+  and the LEDs right on every load): 1.27 s at 4 MHz, 0.92-0.95 s at
+  9.375 MHz, 0.99 s at 15 MHz, 0.95 s at 25 MHz (which loaded this
+  time). From 9.375 MHz on the time no longer depends on TCK: about
+  580 KB/s, USB full-speed.
